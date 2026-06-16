@@ -1,4 +1,7 @@
-export const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://127.0.0.1:8000';
+export const API_BASE =
+  process.env.NEXT_PUBLIC_API_URL ||
+  process.env.NEXT_PUBLIC_API_BASE ||
+  'https://quantos-api.onrender.com';
 
 const TOKEN_KEY = 'prismflow_token';
 const USER_KEY = 'prismflow_user';
