@@ -8,7 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 if(MSVC)
     add_compile_options(/O2 /Oi /Ot /EHsc /DNOMINMAX)
 else()
-    add_compile_options(-O3 -march=native -DNDEBUG)
+    add_compile_options(-O3 -DNDEBUG)
 endif()
 
 add_executable(benchmark_engine
@@ -19,7 +19,7 @@ target_include_directories(benchmark_engine PRIVATE
     cpp_engine/src
 )
 
-# Live WebSocket engine dependencies: Windows uses vcpkg; Linux/macOS use system libwebsockets.
+# Live WebSocket engine dependencies.
 set(LIVE_ENGINE_AVAILABLE FALSE)
 set(LWS_INCLUDE_DIR "")
 set(LWS_LINK_LIBS "")
@@ -28,21 +28,46 @@ if(WIN32)
     set(VCPKG_ROOT_DIR "C:/vcpkg")
     set(LWS_INCLUDE_DIR "${VCPKG_ROOT_DIR}/installed/x64-windows/include")
     set(LWS_LIB_DIR "${VCPKG_ROOT_DIR}/installed/x64-windows/lib")
+
     if(EXISTS "${LWS_INCLUDE_DIR}/libwebsockets.h" AND EXISTS "${LWS_LIB_DIR}/websockets.lib")
         set(LIVE_ENGINE_AVAILABLE TRUE)
         set(LWS_LINK_LIBS "${LWS_LIB_DIR}/websockets.lib" ws2_32 crypt32 userenv iphlpapi secur32)
     endif()
 else()
-    find_path(LWS_INCLUDE_DIR libwebsockets.h)
-    find_library(LWS_LIBRARY websockets)
+    find_path(LWS_INCLUDE_DIR
+        NAMES libwebsockets.h
+        PATHS
+            /usr/include
+            /usr/local/include
+            /usr/include/libwebsockets
+            /usr/local/include/libwebsockets
+    )
+
+    find_library(LWS_LIBRARY
+        NAMES websockets libwebsockets
+        PATHS
+            /usr/lib
+            /usr/local/lib
+            /usr/lib/x86_64-linux-gnu
+            /usr/local/lib/x86_64-linux-gnu
+    )
+
     find_package(OpenSSL QUIET)
+
     if(LWS_INCLUDE_DIR AND LWS_LIBRARY)
         set(LIVE_ENGINE_AVAILABLE TRUE)
         set(LWS_LINK_LIBS ${LWS_LIBRARY})
+
         if(OpenSSL_FOUND)
             list(APPEND LWS_LINK_LIBS OpenSSL::SSL OpenSSL::Crypto)
         endif()
+
         list(APPEND LWS_LINK_LIBS z pthread)
+        message(STATUS "libwebsockets found: include=${LWS_INCLUDE_DIR}, lib=${LWS_LIBRARY}")
+    else()
+        message(WARNING "libwebsockets not found by CMake search.")
+        message(WARNING "LWS_INCLUDE_DIR=${LWS_INCLUDE_DIR}")
+        message(WARNING "LWS_LIBRARY=${LWS_LIBRARY}")
     endif()
 endif()
 
@@ -150,8 +175,7 @@ add_executable(prism_backtest
 target_include_directories(prism_backtest PRIVATE
     cpp_engine/src
 )
-# C++ Heavy production-style paper trading stack. This target has no Python/Kafka/WebSocket dependency,
-# so it builds quickly on Windows/Linux and is ideal for interview demos and debugging.
+
 add_executable(prism_cpp_heavy_paper
     cpp_engine/src/apps/prism_paper_trading_app.cpp
     cpp_engine/src/prism_live_engine.cpp
