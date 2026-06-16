@@ -7,6 +7,9 @@ const TOKEN_KEY = 'prismflow_token';
 const USER_KEY = 'prismflow_user';
 const REFRESH_KEY = 'quantos_refresh_token';
 
+const GENERIC_SERVICE_ERROR = 'QuantOS service is temporarily unavailable. Please try again shortly.';
+const GENERIC_REQUEST_ERROR = 'Something went wrong. Please try again.';
+
 export type AuthUser = {
   id: string;
   email: string;
@@ -112,16 +115,37 @@ function normalizeError(data: unknown, status: number): string {
   }
 }
 
+function containsInternalDetails(message: string): boolean {
+  return /https?:\/\/|trycloudflare|localhost|127\.0\.0\.1|0\.0\.0\.0|:\d{2,5}|uvicorn|traceback|stack trace|prism_live_paper_trading|\.exe|cannot reach quantos api|please start the backend|backend|api base|next_public/i.test(message);
+}
+
+function sanitizeApiMessage(message: string, status: number): string {
+  const cleaned = message.trim();
+  if (!cleaned) return GENERIC_REQUEST_ERROR;
+
+  if (containsInternalDetails(cleaned)) {
+    return status === 0 || status >= 500 ? GENERIC_SERVICE_ERROR : GENERIC_REQUEST_ERROR;
+  }
+
+  if (status === 0 || status >= 500) {
+    if (/email service/i.test(cleaned)) return 'Email service is temporarily unavailable. Please try again shortly.';
+    if (/paper trading|live paper|engine/i.test(cleaned)) return 'Paper trading engine is temporarily unavailable. Please try again shortly.';
+    return cleaned || GENERIC_SERVICE_ERROR;
+  }
+
+  return cleaned;
+}
+
 export function formatApiError(err: unknown): string {
-  if (err instanceof ApiError) return err.message;
-  if (err instanceof Error) return err.message;
-  if (typeof err === 'string') return err;
+  if (err instanceof ApiError) return sanitizeApiMessage(err.message, err.status);
+  if (err instanceof Error) return sanitizeApiMessage(err.message, 0);
+  if (typeof err === 'string') return sanitizeApiMessage(err, 0);
   if (err && typeof err === 'object') {
     const maybe = err as { message?: unknown; detail?: unknown };
-    if (typeof maybe.message === 'string') return maybe.message;
-    if (typeof maybe.detail === 'string') return maybe.detail;
+    if (typeof maybe.message === 'string') return sanitizeApiMessage(maybe.message, 0);
+    if (typeof maybe.detail === 'string') return sanitizeApiMessage(maybe.detail, 0);
     if (Array.isArray(maybe.detail)) {
-      return maybe.detail.map(formatDetailItem).filter(Boolean).join('; ');
+      return sanitizeApiMessage(maybe.detail.map(formatDetailItem).filter(Boolean).join('; '), 0);
     }
   }
   return 'An unexpected error occurred';
@@ -175,11 +199,9 @@ export async function api(path: string, options: RequestInit = {}) {
   let res: Response;
   try {
     res = await fetch(`${API_BASE}${path}`, { ...options, headers });
-  } catch {
-    throw new ApiError(
-      `Cannot reach QuantOS API at ${API_BASE}. Please start the backend and refresh this page.`,
-      0
-    );
+  } catch (err) {
+    console.error('[QuantOS][api] Network request failed', { path, apiBase: API_BASE, error: err });
+    throw new ApiError(GENERIC_SERVICE_ERROR, 0);
   }
 
   const text = await res.text();
@@ -191,7 +213,7 @@ export async function api(path: string, options: RequestInit = {}) {
   }
 
   if (!res.ok) {
-    const message = normalizeError(data, res.status);
+    const message = sanitizeApiMessage(normalizeError(data, res.status), res.status);
     if (res.status === 401 && !path.startsWith('/auth/login') && !path.startsWith('/auth/register')) {
       handleUnauthorized();
     }
