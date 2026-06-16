@@ -1,0 +1,5 @@
+'use client';
+import {useEffect,useState} from 'react';
+import {api} from '../../lib/api';
+export default function Audit(){const [jobs,setJobs]=useState<any[]>([]),[audit,setAudit]=useState<any>(null),[events,setEvents]=useState<any[]>([]); useEffect(()=>{api('/jobs/').then((r:any)=>setJobs(Array.isArray(r)?r:(r.jobs||[]))).catch(()=>{})},[]); async function load(id:string){setAudit(await api(`/reports/${id}/audit`)); setEvents((await api(`/reports/${id}/events`)) as any[]);}
+return <><div className="hero"><h1>Signal Audit Log</h1><p className="muted">setup_score, validation, entry intent, rejections and execution audit from PRISM files.</p></div><div className="card"><label>Select Job<select onChange={e=>e.target.value&&load(e.target.value)}><option value="">Choose job...</option>{jobs.map(j=><option key={j.id} value={j.id}>{j.id.slice(0,8)}</option>)}</select></label></div>{audit&&<div className="card"><span className="pill">audit_log.json</span><pre>{JSON.stringify(audit,null,2)}</pre></div>}<div className="card"><span className="pill">events.jsonl</span><pre>{JSON.stringify(events,null,2)}</pre></div></>}

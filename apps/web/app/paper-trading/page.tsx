@@ -1,0 +1,1156 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import type { CSSProperties } from "react";
+import { api, formatApiError } from "../../lib/api";
+
+type StrategyRow = {
+  id: string;
+  name?: string;
+  timeframe?: string;
+  symbols?: string[];
+  config?: any;
+  created_at?: string;
+  user_strategy_id?: string;
+};
+
+type LiveStatus = {
+  status: string;
+  session_id?: string;
+  selected_strategy_id?: string;
+  selected_strategy_name?: string;
+  selected_strategy_db_id?: string;
+  session_number?: number;
+  config_path?: string;
+  live_config?: any;
+  symbol?: string;
+  real_time?: boolean;
+  synthetic_data_used?: boolean;
+  last_price?: number;
+  processed?: number;
+  realized_pnl?: number;
+  unrealized_pnl?: number;
+  open_position?: unknown;
+  open_positions_detail?: any[];
+  events?: any[];
+  stdout_tail?: string[];
+  error?: string;
+  report_files?: Record<string, string>;
+  metrics?: Record<string, any>;
+  session_metrics?: Record<string, any>;
+  markets?: any[];
+  supported_symbols?: string[];
+  wallet?: {
+    starting_balance: number;
+    current_balance: number; // Backwards-compatible alias for account_equity
+    account_equity?: number;
+    cash_balance?: number;
+    realized_pnl: number;
+    unrealized_pnl: number;
+    locked_until?: string;
+  };
+};
+
+const SUPPORTED_SYMBOLS = [
+  "BTCUSDT",
+  "ETHUSDT",
+  "BNBUSDT",
+  "SOLUSDT",
+  "XRPUSDT",
+  "ADAUSDT",
+  "DOGEUSDT",
+  "AVAXUSDT",
+  "LINKUSDT",
+  "TRXUSDT",
+];
+
+function money(v: unknown) {
+  const n = typeof v === "number" ? v : Number(v || 0);
+  return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
+function asNum(v: any) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+function cleanTime(v: any) {
+  if (!v) return "-";
+  const raw = String(v);
+  const normalized = raw.endsWith("+00:00Z")
+    ? raw.replace("+00:00Z", "Z")
+    : raw;
+  const d = new Date(normalized);
+  if (Number.isNaN(d.getTime()))
+    return raw.replace("T", " ").replace("Z", " UTC");
+  return d.toLocaleString(undefined, { hour12: false });
+}
+function normalizeReason(v: any) {
+  return String(v || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "_");
+}
+function prettyReason(reason: any) {
+  const r = normalizeReason(reason);
+  if (!r) return "";
+  if (r === "TARGET1" || r === "TARGET_1" || r === "TARGET1_HIT") return "TARGET 1 HIT";
+  if (r === "TARGET2" || r === "TARGET_2" || r === "TARGET2_HIT") return "TARGET 2 HIT";
+  if (r === "STOP" || r === "STOP_LOSS" || r === "STOP_HIT") return "STOP LOSS";
+  if (r === "TIME_EXIT") return "TIME EXIT";
+  if (r === "USER_STOP_EXIT") return "USER STOP EXIT";
+  if (r === "FORCED_EXIT" || r === "DATA_END_EXIT") return "FORCED EXIT";
+  return r.replaceAll("_", " ");
+}
+function inferResult(entry: any, exit: any, rValue: any, side = "BUY") {
+  const en = Number(entry),
+    ex = Number(exit);
+  const normalizedSide = String(side || "BUY").toUpperCase();
+
+  // Trade journal display must trust actual entry/exit price direction first.
+  // This prevents impossible rows like BUY exit below entry but Result = WIN
+  // because an old/misaligned R_multiple was parsed from raw text.
+  if (Number.isFinite(en) && Number.isFinite(ex)) {
+    const pnl = normalizedSide === "SELL" ? en - ex : ex - en;
+    if (pnl > 0.0000001) return "WIN";
+    if (pnl < -0.0000001) return "LOSS";
+    return "BREAKEVEN";
+  }
+
+  const r = Number(rValue);
+  if (Number.isFinite(r)) {
+    if (r > 0.05) return "WIN";
+    if (r < -0.05) return "LOSS";
+    return "BREAKEVEN";
+  }
+  return "-";
+}
+function inferExitReason(t: any) {
+  if (t.status === "OPEN") return "OPEN POSITION";
+  const side = String(t.side || "BUY").toUpperCase();
+  const entry = Number(t.entry_price);
+  const exit = Number(t.exit_price);
+  const stop = Number(t.stop);
+  const target1 = Number(t.target1);
+  const target2 = Number(t.target2);
+  const result = inferResult(entry, exit, t.r, side);
+  const rawReason = prettyReason(t.exit_reason);
+
+  // Price-consistent reason has priority over raw text. Raw C++ lines include
+  // target1=/target2= price fields, and the UI must never confuse those with
+  // exit_reason=TARGET_1/TARGET_2.
+  if (side === "BUY" && Number.isFinite(entry) && Number.isFinite(exit)) {
+    if (result === "LOSS") {
+      if (Number.isFinite(stop) && exit <= stop) return "STOP LOSS";
+      return "NEGATIVE EXIT";
+    }
+    if (result === "WIN") {
+      if (Number.isFinite(target2) && exit >= target2) return "TARGET 2 HIT";
+      if (Number.isFinite(target1) && exit >= target1) return "TARGET 1 HIT";
+      if (rawReason === "TARGET 2 HIT" || rawReason === "TARGET 1 HIT") return rawReason;
+      if (rawReason === "TIME EXIT") return "TIME EXIT PROFIT";
+      if (rawReason === "FORCED EXIT") return "FORCED EXIT PROFIT";
+      return "PROFIT EXIT";
+    }
+    return "BREAKEVEN EXIT";
+  }
+
+  if (side === "SELL" && Number.isFinite(entry) && Number.isFinite(exit)) {
+    if (result === "LOSS") {
+      if (Number.isFinite(stop) && exit >= stop) return "STOP LOSS";
+      return "NEGATIVE EXIT";
+    }
+    if (result === "WIN") {
+      if (Number.isFinite(target2) && exit <= target2) return "TARGET 2 HIT";
+      if (Number.isFinite(target1) && exit <= target1) return "TARGET 1 HIT";
+      if (rawReason === "TARGET 2 HIT" || rawReason === "TARGET 1 HIT") return rawReason;
+      if (rawReason === "TIME EXIT") return "TIME EXIT PROFIT";
+      if (rawReason === "FORCED EXIT") return "FORCED EXIT PROFIT";
+      return "PROFIT EXIT";
+    }
+    return "BREAKEVEN EXIT";
+  }
+
+  if (rawReason) return rawReason;
+  if (result === "WIN") return "PROFIT EXIT";
+  if (result === "LOSS") return "NEGATIVE EXIT";
+  if (result === "BREAKEVEN") return "BREAKEVEN EXIT";
+  return "-";
+}
+function buildTradeRows(events: any[]) {
+  const chronological = [...(events || [])].reverse();
+  const closed: any[] = [];
+  const openBySymbol: Record<string, any[]> = {};
+
+  const symOf = (e: any) => String(e?.symbol || e?.market || "BTCUSDT").toUpperCase();
+
+  for (const e of chronological) {
+    const type = String(e.event_type || "");
+    const symbol = symOf(e);
+    openBySymbol[symbol] = openBySymbol[symbol] || [];
+
+    if (type === "PAPER_BUY_FILL") {
+      openBySymbol[symbol].push({
+        symbol,
+        side: "BUY",
+        entry_time: e.created_at,
+        entry_price: e.fill || e.entry || e.price,
+        qty: e.qty,
+        stop: e.stop,
+        target1: e.target1,
+        target2: e.target2,
+        setup_score: e.setup_score,
+        status: "OPEN",
+        result: "OPEN",
+        exit_reason: "OPEN POSITION",
+      });
+    } else if (type === "PAPER_SELL_FILL") {
+      const queue = openBySymbol[symbol] || [];
+      const matchedBuy = queue.length ? queue[queue.length - 1] : null;
+      const row: any = {
+        symbol,
+        side: "BUY",
+        entry_time: matchedBuy?.entry_time || e.entry_time || e.created_at,
+        exit_time: e.created_at,
+        entry_price: e.entry || matchedBuy?.entry_price,
+        exit_price: e.exit || e.fill || e.price,
+        // SELL fills often do not echo qty, so carry qty from the matched BUY fill for the same symbol.
+        qty: e.qty || matchedBuy?.qty || "-",
+        stop: e.stop || matchedBuy?.stop,
+        target1: e.target1 || matchedBuy?.target1,
+        target2: e.target2 || matchedBuy?.target2,
+        r: e.R_multiple || e.r || "-",
+        pnl: e.pnl || e.realized_pnl || "-",
+        status: "CLOSED",
+      };
+      row.result = inferResult(row.entry_price, row.exit_price, row.r, row.side);
+      row.exit_reason_raw = e.exit_reason || "";
+      row.exit_reason = inferExitReason({ ...row, exit_reason: row.exit_reason_raw });
+      closed.push(row);
+      if (queue.length) queue.pop();
+    }
+  }
+
+  const openRows = Object.values(openBySymbol)
+    .flat()
+    .map((b) => ({ ...b, exit_reason: "OPEN POSITION" }));
+  return [...openRows, ...closed].reverse();
+}
+function signedStyle(value: any): CSSProperties {
+  const n = Number(String(value ?? "").replace(/[$,%Rμs, ]/g, ""));
+  if (!Number.isFinite(n)) return {};
+  if (n > 0) return { color: "#86efac" };
+  if (n < 0) return { color: "#fca5a5" };
+  return { color: "#e5e7eb" };
+}
+
+function resultStyle(result: any): CSSProperties {
+  const r = String(result || "").toUpperCase();
+  if (r === "WIN") return { color: "#86efac", fontWeight: 800 };
+  if (r === "LOSS") return { color: "#fca5a5", fontWeight: 800 };
+  if (r === "OPEN") return { color: "#93c5fd", fontWeight: 800 };
+  return { color: "#e5e7eb" };
+}
+
+
+function reasonStyle(reason: any): CSSProperties {
+  const r = String(reason || "").toUpperCase();
+  if (r.includes("TARGET") || r.includes("PROFIT")) return { color: "#86efac", fontWeight: 800 };
+  if (r.includes("STOP") || r.includes("NEGATIVE") || r.includes("LOSS")) return { color: "#fca5a5", fontWeight: 800 };
+  if (r.includes("TIME")) return { color: "#93c5fd", fontWeight: 800 };
+  if (r.includes("OPEN")) return { color: "#fbbf24", fontWeight: 800 };
+  return { color: "#e5e7eb", fontWeight: 700 };
+}
+function countStyle(kind: "win" | "loss" | "be"): CSSProperties {
+  if (kind === "win") return { color: "#86efac", fontWeight: 900 };
+  if (kind === "loss") return { color: "#fca5a5", fontWeight: 900 };
+  return { color: "#e5e7eb", fontWeight: 900 };
+}
+
+function triggerPrice(t: any) {
+  const reason = String(t.exit_reason || "").toUpperCase();
+  if (reason.includes("STOP")) return Number(t.stop);
+  if (reason.includes("TARGET 2")) return Number(t.target2);
+  if (reason.includes("TARGET 1")) return Number(t.target1);
+  return NaN;
+}
+
+function slippageInTradeDirection(t: any) {
+  const trigger = triggerPrice(t);
+  const exit = Number(t.exit_price);
+  if (!Number.isFinite(trigger) || !Number.isFinite(exit)) return null;
+  const side = String(t.side || "BUY").toUpperCase();
+  // Positive means better than the intended stop/target trigger; negative means worse fill.
+  return side === "SELL" ? trigger - exit : exit - trigger;
+}
+
+function buildOpenPositions(status: LiveStatus, tradeRows: any[]) {
+  const details = Array.isArray(status.open_positions_detail) ? status.open_positions_detail : [];
+  if (details.length) return details;
+
+  const states = (status as any).symbol_states || {};
+  const byState = Object.entries(states)
+    .filter(([, st]: any) => Number(st?.open_trade || st?.open_positions || 0) > 0)
+    .map(([symbol, st]: any) => ({
+      symbol,
+      side: st.open_side || "BUY",
+      entry_price: st.open_entry,
+      qty: st.open_qty || st.qty || "-",
+      stop: st.open_stop,
+      target1: st.target1,
+      target2: st.target2,
+      current_price: st.last_price,
+      current_R: st.current_R,
+      unrealized_pnl: st.unrealized_pnl,
+    }));
+  if (byState.length) return byState;
+
+  return tradeRows
+    .filter((t: any) => t.status === "OPEN")
+    .map((t: any) => ({
+      symbol: t.symbol,
+      side: t.side || "BUY",
+      entry_price: t.entry_price,
+      qty: t.qty,
+      stop: t.stop,
+      target1: t.target1,
+      target2: t.target2,
+    }));
+}
+
+function Countdown({ until }: { until?: string }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  if (!until) return null;
+  const ms = new Date(until).getTime() - now;
+  if (ms <= 0) return null;
+  const h = Math.floor(ms / 3600000);
+  const m = Math.floor((ms % 3600000) / 60000);
+  const s = Math.floor((ms % 60000) / 1000);
+  return (
+    <span>
+      {h}h {m}m {s}s
+    </span>
+  );
+}
+
+export default function PaperTradingPage() {
+  const [status, setStatus] = useState<LiveStatus>({ status: "loading" });
+  const [strategies, setStrategies] = useState<StrategyRow[]>([]);
+  const [selectedStrategyId, setSelectedStrategyId] = useState("");
+  const [selectedSymbols, setSelectedSymbols] = useState<string[]>(["BTCUSDT"]);
+  const [message, setMessage] = useState(
+    "Real-time Binance BTCUSDT live paper mode. No real-money execution.",
+  );
+  const [busy, setBusy] = useState(false);
+
+  async function refresh() {
+    try {
+      setStatus((await api("/live-paper/status")) as LiveStatus);
+    } catch (err) {
+      setMessage(formatApiError(err));
+      setStatus({ status: "error", error: formatApiError(err) });
+    }
+  }
+
+  async function loadStrategies() {
+    try {
+      const rows: any = await api("/strategies");
+      const list = Array.isArray(rows) ? rows : [];
+      setStrategies(list);
+      if (!selectedStrategyId && list.length) {
+        setSelectedStrategyId(list[0].id);
+        setSelectedSymbols(
+          list[0].symbols?.length ? list[0].symbols : ["BTCUSDT"],
+        );
+      }
+    } catch (err) {
+      setMessage(
+        `Could not load Strategy Builder configs: ${formatApiError(err)}`,
+      );
+      setStrategies([]);
+    }
+  }
+
+  function toggleLiveSymbol(sym: string) {
+    const set = new Set(selectedSymbols);
+    set.has(sym) ? set.delete(sym) : set.add(sym);
+    const next = [...set];
+    setSelectedSymbols(next.length ? next : ["BTCUSDT"]);
+  }
+  function selectAllLiveSymbols() {
+    setSelectedSymbols([...SUPPORTED_SYMBOLS]);
+  }
+  function useStrategySymbols() {
+    const st = strategies.find((s) => s.id === selectedStrategyId);
+    setSelectedSymbols(st?.symbols?.length ? st.symbols : ["BTCUSDT"]);
+  }
+
+  async function start() {
+    setBusy(true);
+    try {
+      const r = (await api("/live-paper/start", {
+        method: "POST",
+        body: JSON.stringify({
+          strategy_id: selectedStrategyId || undefined,
+          symbols: selectedSymbols,
+        }),
+      })) as LiveStatus;
+      setStatus(r);
+      const cfgName =
+        r.selected_strategy_name ||
+        r.live_config?.name ||
+        "latest Strategy Builder config";
+      setMessage(
+        r.status === "disabled"
+          ? r.error
+          : `Live paper session started using ${cfgName} on ${selectedSymbols.join(", ")}. Waiting for real Binance WebSocket ticks.`,
+      );
+    } catch (err) {
+      setMessage(formatApiError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function stop() {
+    setBusy(true);
+    try {
+      const r = (await api("/live-paper/stop", {
+        method: "POST",
+      })) as LiveStatus;
+      setStatus(r);
+      setMessage(
+        "Session stopped. Final live paper report files generated in outputs/prismflow_cpp_heavy/.",
+      );
+    } catch (err) {
+      setMessage(formatApiError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    loadStrategies();
+    refresh();
+    const id = setInterval(refresh, 1500);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const wallet = status.wallet || {
+    starting_balance: 100000,
+    current_balance: 100000,
+    account_equity: 100000,
+    cash_balance: 100000,
+    realized_pnl: 0,
+    unrealized_pnl: 0,
+  };
+  const realizedPnl = status.realized_pnl ?? wallet.realized_pnl ?? 0;
+  const unrealizedPnl = status.unrealized_pnl ?? wallet.unrealized_pnl ?? 0;
+  const cashBalance = wallet.cash_balance ?? wallet.starting_balance + realizedPnl;
+  const accountEquity = wallet.account_equity ?? wallet.current_balance ?? cashBalance + unrealizedPnl;
+  const locked = Boolean(wallet.locked_until);
+  const events = useMemo(
+    () => [...(status.events || [])].reverse(),
+    [status.events],
+  );
+  const metrics = status.session_metrics || status.metrics || {};
+  const liveConfig = status.live_config || {};
+  const activeStrategyName =
+    status.selected_strategy_name ||
+    liveConfig.name ||
+    strategies.find((s) => s.id === selectedStrategyId)?.name ||
+    "Default C++ config";
+  const activeStrategyId =
+    status.selected_strategy_id ||
+    liveConfig.strategy_id ||
+    strategies.find((s) => s.id === selectedStrategyId)?.user_strategy_id ||
+    selectedStrategyId ||
+    "";
+  const activeBarSeconds =
+    metrics.cfg_bar_seconds ||
+    liveConfig.bar_seconds ||
+    strategies.find((s) => s.id === selectedStrategyId)?.config?.bar_seconds ||
+    "-";
+  const tradeRows = useMemo(() => buildTradeRows(events), [events]);
+  const openPositions = useMemo(() => buildOpenPositions(status, tradeRows), [status, tradeRows]);
+  const marketRows = Array.isArray(status.markets) ? status.markets : [];
+  const activeMarkets = marketRows.filter((m: any) => m.paper_status === "ACTIVE_WEBSOCKET");
+  const primaryMarket =
+    activeMarkets.find((m: any) => m.symbol === (status.symbol || liveConfig.symbols?.[0])) ||
+    activeMarkets[0] ||
+    marketRows.find((m: any) => m.symbol === (selectedSymbols[0] || status.symbol)) ||
+    null;
+  const primarySymbol =
+    primaryMarket?.symbol ||
+    (status.symbol && status.symbol !== "MULTI" ? status.symbol : selectedSymbols[0]) ||
+    "Market";
+  const primaryPrice = primaryMarket?.latest_price ?? status.last_price;
+  const openTrade = Number(metrics.open_trade || metrics.open_positions || 0);
+  const totalTrades = Number(metrics.total_trades || 0);
+  const wins = Number(metrics.wins || 0);
+  const losses = Number(metrics.losses || 0);
+  const breakevens = Number(metrics.breakevens || 0);
+  const canStart =
+    !busy &&
+    !locked &&
+    status.status !== "running" &&
+    status.status !== "starting";
+  const canStop =
+    !busy && (status.status === "running" || status.status === "starting");
+  const liveStatusLabel =
+    status.status === "running" || status.status === "starting"
+      ? "TRADING"
+      : "STOPPED";
+  const setupScore =
+    metrics.current_setup_score ??
+    metrics.setup_score ??
+    metrics.open_setup_score ??
+    metrics.last_setup_score ??
+    0;
+
+  return (
+    <main style={{ padding: 24, maxWidth: 1280, margin: "0 auto" }}>
+      <section style={{ marginBottom: 24 }}>
+        <h1 style={{ fontSize: 34, marginBottom: 8 }}>Live Paper Trading</h1>
+        <p style={{ color: "#94a3b8" }}>
+          10 Binance USDT markets · real WebSocket market data · C++ paper
+          broker · paper account equity 100000 · no real broker orders.
+        </p>
+      </section>
+
+      <section style={{ ...panelStyle, marginBottom: 16 }}>
+        <h2 style={h2Style}>Live Strategy Builder Config</h2>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns:
+              "minmax(260px, 1fr) repeat(5, minmax(120px, 170px))",
+            gap: 12,
+            alignItems: "end",
+          }}
+        >
+          <label
+            style={{ display: "grid", gap: 6, color: "#94a3b8", fontSize: 13 }}
+          >
+            Strategy used by live C++ engine
+            <select
+              value={selectedStrategyId}
+              onChange={(e) => {
+                const id = e.target.value;
+                setSelectedStrategyId(id);
+                const st = strategies.find((s) => s.id === id);
+                if (st?.symbols?.length) setSelectedSymbols(st.symbols);
+              }}
+              disabled={!canStart}
+              style={inputStyle}
+            >
+              <option value="">Latest saved strategy / default config</option>
+              {strategies.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name || "Strategy"} ·{" "}
+                  {s.user_strategy_id || s.id.slice(0, 8)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <Mini label="Active" value={activeStrategyName} />
+          <Mini
+            label="Lookback"
+            value={String(
+              metrics.cfg_lookback ??
+                liveConfig.strategy?.breakout_lookback ??
+                "-",
+            )}
+          />
+          <Mini
+            label="Min score"
+            value={String(
+              metrics.cfg_min_score ??
+                liveConfig.strategy?.min_setup_score ??
+                "-",
+            )}
+          />
+          <Mini
+            label="Risk %"
+            value={String(
+              metrics.cfg_risk_pct ??
+                liveConfig.strategy?.risk?.risk_per_trade_pct ??
+                "-",
+            )}
+          />
+          <Mini
+            label="Bar length"
+            value={activeBarSeconds === "-" ? "-" : `${activeBarSeconds}s`}
+          />
+        </div>
+        <div
+          style={{
+            marginTop: 14,
+            borderTop: "1px solid #243044",
+            paddingTop: 14,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              gap: 10,
+              alignItems: "center",
+              flexWrap: "wrap",
+            }}
+          >
+            <b>Activate paper markets</b>
+            <div>
+              <button
+                type="button"
+                onClick={selectAllLiveSymbols}
+                disabled={!canStart}
+              >
+                Select all
+              </button>{" "}
+              <button
+                type="button"
+                className="secondary"
+                onClick={useStrategySymbols}
+                disabled={!canStart}
+              >
+                Use strategy symbols
+              </button>
+            </div>
+          </div>
+          <div className="symbol-picker">
+            {SUPPORTED_SYMBOLS.map((sym) => (
+              <label key={sym} className="symbol-chip">
+                <input
+                  type="checkbox"
+                  checked={selectedSymbols.includes(sym)}
+                  disabled={!canStart}
+                  onChange={() => toggleLiveSymbol(sym)}
+                />
+                <span>{sym}</span>
+              </label>
+            ))}
+          </div>
+          <p style={{ color: "#94a3b8", fontSize: 12, marginTop: 8 }}>
+            Selected active markets: {selectedSymbols.join(", ")}. Multi-symbol
+            live mode starts one C++ Binance WebSocket paper engine per selected
+            symbol.
+          </p>
+        </div>
+      </section>
+
+      <section
+        style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}
+      >
+        <button onClick={start} disabled={!canStart}>
+          Start Live Paper Trading
+        </button>
+        <button
+          onClick={stop}
+          disabled={!canStop}
+          style={{ background: "#ef4444" }}
+        >
+          Stop & Exit
+        </button>
+        <button
+          onClick={() => {
+            loadStrategies();
+            refresh();
+          }}
+          disabled={busy}
+          className="secondary"
+        >
+          Refresh
+        </button>
+        {locked && (
+          <div
+            style={{
+              padding: "10px 14px",
+              border: "1px solid #ef4444",
+              borderRadius: 8,
+              color: "#fecaca",
+            }}
+          >
+            Locked for <Countdown until={wallet.locked_until} />
+          </div>
+        )}
+      </section>
+
+      <p
+        style={{
+          marginBottom: 20,
+          color: status.error ? "#fecaca" : "#cbd5e1",
+        }}
+      >
+        {message}
+      </p>
+      <section style={{ ...panelStyle, marginBottom: 20, background: "#0f172a" }}>
+        <h2 style={h2Style}>Execution model</h2>
+        <p style={{ color: "#cbd5e1", fontSize: 13 }}>
+          Live paper trading uses <b>realistic tick-based market fills</b>. Stop and target prices are intended trigger levels; actual exit price can differ because the paper broker exits on the next live Binance trade tick. The Trade Journal shows slippage explicitly so stop/target differences are transparent.
+        </p>
+        <p style={{ color: "#94a3b8", fontSize: 13, marginTop: 8 }}>
+          Closed-trade metrics are shown from one atomic session snapshot. Cash Balance moves only after closed trades. Account Equity = Cash Balance + Unrealized PnL, so it can move every tick while a position is open. Wins/Losses, Gross R, Avg R and Last Result update together only after the C++ ledger reports a closed trade.
+        </p>
+      </section>
+
+      {status.error && (
+        <pre
+          style={{
+            whiteSpace: "pre-wrap",
+            background: "#1e1b4b",
+            padding: 12,
+            borderRadius: 8,
+            marginBottom: 20,
+          }}
+        >
+          {status.error}
+        </pre>
+      )}
+
+      <section
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))",
+          gap: 14,
+          marginBottom: 20,
+        }}
+      >
+        <Card label="Live status" value={liveStatusLabel} />
+        <Card
+          label={`${primarySymbol} price`}
+          value={primaryPrice ? `$${money(primaryPrice)}` : "waiting"}
+        />
+        <Card
+          label="Account equity"
+          value={`$${money(accountEquity)}`}
+        />
+        <Card
+          label="Cash balance"
+          value={`$${money(cashBalance)}`}
+        />
+        <Card
+          label="Realized PnL"
+          value={`$${money(realizedPnl)}`}
+        />
+        <Card
+          label="Unrealized PnL"
+          value={`$${money(unrealizedPnl)}`}
+        />
+        <Card
+          label="Open positions"
+          value={openPositions.length ? `${openPositions.length} active` : "0"}
+        />
+        <Card
+          label="Ticks processed"
+          value={String(status.processed || metrics.processed || 0)}
+        />
+        <Card label="Signals" value={String(metrics.signals || 0)} />
+        <Card label="Live setup score" value={String(setupScore)} />
+        <Card label="Bars" value={String(metrics.bars || 0)} />
+        <Card label="Total trades" value={String(totalTrades)} />
+        <WinLossCard wins={wins} losses={losses} breakevens={breakevens} />
+        <Card label="Gross R" value={String(metrics.gross_R ?? 0)} />
+        <Card label="Avg R" value={String(metrics.avg_R ?? 0)} />
+        <Card
+          label="Last result"
+          value={String(metrics.last_result || "NONE")}
+        />
+        <Card
+          label="P95 engine"
+          value={metrics.p95_engine_us ? `${metrics.p95_engine_us} μs` : "-"}
+        />
+        <Card label="Strategy ID" value={activeStrategyId || "-"} />
+        <Card
+          label="Live bar length"
+          value={activeBarSeconds === "-" ? "-" : `${activeBarSeconds}s`}
+        />
+      </section>
+
+      <section style={{ ...panelStyle, marginBottom: 20 }}>
+        <h2 style={h2Style}>10 Binance Markets Monitor</h2>
+        <p style={{ color: "#94a3b8", fontSize: 13, marginBottom: 10 }}>
+          All 10 supported paper markets are listed here. Rows marked
+          ACTIVE_WEBSOCKET are running live paper trading with their own C++
+          Binance WebSocket stream.
+        </p>
+        <div style={{ overflowX: "auto" }}>
+          <table
+            className="pro-table"
+            style={{ width: "100%", borderCollapse: "collapse" }}
+          >
+            <thead>
+              <tr>
+                <Th>Symbol</Th>
+                <Th>Covered</Th>
+                <Th>Status</Th>
+                <Th>Latest price</Th>
+                <Th>Messages</Th>
+                <Th>Bars</Th>
+                <Th>Signals</Th>
+                <Th>Trades</Th>
+                <Th>P95 engine</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {marketRows.length ? (
+                marketRows.map((m: any) => (
+                  <tr key={m.symbol}>
+                    <Td>{m.symbol}</Td>
+                    <Td>{m.covered ? "YES" : "NO"}</Td>
+                    <Td>
+                      <span
+                        className={
+                          m.paper_status === "ACTIVE_WEBSOCKET"
+                            ? "pill pill-green"
+                            : "pill pill-white"
+                        }
+                      >
+                        {m.paper_status}
+                      </span>
+                    </Td>
+                    <Td>
+                      {m.latest_price ? `$${money(m.latest_price)}` : "-"}
+                    </Td>
+                    <Td>{m.messages || 0}</Td>
+                    <Td>{m.bars || 0}</Td>
+                    <Td>{m.signals || 0}</Td>
+                    <Td>{m.trades || 0}</Td>
+                    <Td>{m.p95_engine_us ? `${m.p95_engine_us} μs` : "-"}</Td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <Td colSpan={9}>
+                    Market monitor waiting for backend status.
+                  </Td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section
+        style={{
+          display: "grid",
+          gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)",
+          gap: 16,
+        }}
+      >
+        <div style={panelStyle}>
+          <h2 style={h2Style}>Open Positions</h2>
+          <p style={{ color: "#94a3b8", fontSize: 13, marginBottom: 10 }}>
+            Multi-symbol paper positions are shown symbol-wise. No raw JSON is shown here.
+          </p>
+          {openPositions.length ? (
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr>
+                    <Th>Symbol</Th>
+                    <Th>Side</Th>
+                    <Th>Entry</Th>
+                    <Th>Qty</Th>
+                    <Th>Current</Th>
+                    <Th>Current R</Th>
+                    <Th>Unrealized</Th>
+                    <Th>Stop</Th>
+                    <Th>Targets</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {openPositions.map((p: any, i: number) => (
+                    <tr key={`${p.symbol || "POS"}-${i}`}>
+                      <Td><span style={{ color: "#93c5fd", fontWeight: 800 }}>{p.symbol || "-"}</span></Td>
+                      <Td>{p.side || "BUY"}</Td>
+                      <Td>{p.entry_price ? `$${money(p.entry_price)}` : "-"}</Td>
+                      <Td>{p.qty || "-"}</Td>
+                      <Td>{p.current_price ? `$${money(p.current_price)}` : "-"}</Td>
+                      <Td><span style={signedStyle(p.current_R)}>{p.current_R !== undefined && p.current_R !== "" ? `${Number(p.current_R).toFixed(3)}R` : "-"}</span></Td>
+                      <Td><span style={signedStyle(p.unrealized_pnl)}>{p.unrealized_pnl !== undefined && p.unrealized_pnl !== "" ? `$${money(p.unrealized_pnl)}` : "-"}</span></Td>
+                      <Td>{p.stop ? `$${money(p.stop)}` : "-"}</Td>
+                      <Td>{p.target1 ? `$${money(p.target1)} / $${money(p.target2)}` : "-"}</Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div style={{ border: "1px dashed #334155", borderRadius: 10, padding: 16, color: "#94a3b8" }}>
+              No open positions right now. New positions will appear here with symbol, entry, stop, targets and live R.
+            </div>
+          )}
+        </div>
+        <div style={panelStyle}>
+          <h2 style={h2Style}>Live Strategy Config</h2>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <tbody>
+              <SummaryRow label="Strategy ID" value={activeStrategyId || "-"} />
+              <SummaryRow label="Strategy name" value={activeStrategyName} />
+              <SummaryRow
+                label="Symbols"
+                value={(
+                  liveConfig.symbols ||
+                  selectedSymbols || [status.symbol || "BTCUSDT"]
+                ).join(", ")}
+              />
+              <SummaryRow
+                label="Timeframe"
+                value={liveConfig.timeframe || "1m"}
+              />
+              <SummaryRow
+                label="Bar length"
+                value={
+                  activeBarSeconds === "-" ? "-" : `${activeBarSeconds} seconds`
+                }
+              />
+              <SummaryRow
+                label="Lookback / Min score"
+                value={`${metrics.cfg_lookback ?? liveConfig.strategy?.breakout_lookback ?? "-"} / ${metrics.cfg_min_score ?? liveConfig.strategy?.min_setup_score ?? "-"}`}
+              />
+              <SummaryRow
+                label="Risk / Targets"
+                value={`${metrics.cfg_risk_pct ?? liveConfig.strategy?.risk?.risk_per_trade_pct ?? "-"}% · ${liveConfig.strategy?.targets?.target1_R ?? "-"}R / ${liveConfig.strategy?.targets?.target2_R ?? "-"}R`}
+              />
+              <SummaryRow
+                label="Config file"
+                value={
+                  status.config_path
+                    ? "Saved for this live session"
+                    : "Not created yet"
+                }
+              />
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section style={{ ...panelStyle, marginTop: 16 }}>
+        <h2 style={h2Style}>Trade Journal</h2>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr>
+                <Th>#</Th>
+                <Th>Symbol</Th>
+                <Th>Side</Th>
+                <Th>Entry time</Th>
+                <Th>Entry price</Th>
+                <Th>Qty</Th>
+                <Th>Exit time</Th>
+                <Th>Exit price</Th>
+                <Th>Exit reason</Th>
+                <Th>Result</Th>
+                <Th>R</Th>
+                <Th>Stop</Th>
+                <Th>Targets</Th>
+                <Th>Slippage</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {tradeRows.length ? (
+                tradeRows.map((t, i) => (
+                  <tr key={i}>
+                    <Td>{tradeRows.length - i}</Td>
+                    <Td><span style={{ color: "#93c5fd", fontWeight: 800 }}>{t.symbol || status.symbol || "-"}</span></Td>
+                    <Td>{t.side || "BUY"}</Td>
+                    <Td>{cleanTime(t.entry_time)}</Td>
+                    <Td>${money(t.entry_price)}</Td>
+                    <Td>{t.qty || "-"}</Td>
+                    <Td>
+                      {t.status === "OPEN" ? "-" : cleanTime(t.exit_time)}
+                    </Td>
+                    <Td>
+                      {t.status === "OPEN" ? "-" : `$${money(t.exit_price)}`}
+                    </Td>
+                    <Td><span style={reasonStyle(t.exit_reason)}>{t.exit_reason || "-"}</span></Td>
+                    <Td>
+                      <span
+                        style={resultStyle(
+                          t.status === "OPEN" ? "OPEN" : t.result,
+                        )}
+                      >
+                        {t.status === "OPEN" ? "OPEN" : t.result || "-"}
+                      </span>
+                    </Td>
+                    <Td>
+                      <span style={signedStyle(t.r)}>
+                        {t.r && t.r !== "-" ? Number(t.r).toFixed(3) : "-"}
+                      </span>
+                    </Td>
+                    <Td>{t.stop ? `$${money(t.stop)}` : "-"}</Td>
+                    <Td>
+                      {t.target1
+                        ? `$${money(t.target1)} / $${money(t.target2)}`
+                        : "-"}
+                    </Td>
+                    <Td>
+                      {(() => {
+                        const slip = slippageInTradeDirection(t);
+                        return slip === null ? "-" : (
+                          <span style={signedStyle(slip)}>
+                            {slip >= 0 ? "+" : "-"}${money(Math.abs(slip))}
+                          </span>
+                        );
+                      })()}
+                    </Td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <Td colSpan={14}>
+                    No paper trades yet. The strategy needs enough closed bars
+                    and a valid setup before it opens a trade.
+                  </Td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+
+
+    </main>
+  );
+}
+
+function SummaryRow({ label, value }: { label: string; value: string }) {
+  return (
+    <tr>
+      <td
+        style={{
+          borderBottom: "1px solid #1e293b",
+          padding: "8px 6px",
+          color: "#94a3b8",
+          width: 160,
+        }}
+      >
+        {label}
+      </td>
+      <td
+        style={{
+          borderBottom: "1px solid #1e293b",
+          padding: "8px 6px",
+          fontWeight: 700,
+        }}
+      >
+        {value}
+      </td>
+    </tr>
+  );
+}
+
+function WinLossCard({
+  wins,
+  losses,
+  breakevens,
+}: {
+  wins: number;
+  losses: number;
+  breakevens: number;
+}) {
+  return (
+    <div style={panelStyle}>
+      <div style={{ color: "#94a3b8", fontSize: 13 }}>Wins / Losses / BE</div>
+      <div style={{ fontSize: 24, fontWeight: 800, marginTop: 6 }}>
+        <span style={countStyle("win")}>{wins}</span>
+        <span style={{ color: "#64748b" }}> / </span>
+        <span style={countStyle("loss")}>{losses}</span>
+        <span style={{ color: "#64748b" }}> / </span>
+        <span style={countStyle("be")}>{breakevens}</span>
+      </div>
+    </div>
+  );
+}
+
+function Card({ label, value }: { label: string; value: string }) {
+  const lower = label.toLowerCase();
+  const style = lower.includes("last result")
+    ? resultStyle(value)
+    : lower.includes("pnl") ||
+        lower.includes("gross r") ||
+        lower.includes("avg r")
+      ? signedStyle(value)
+      : {};
+  return (
+    <div style={panelStyle}>
+      <div style={{ color: "#94a3b8", fontSize: 13 }}>{label}</div>
+      <div style={{ fontSize: 24, fontWeight: 700, marginTop: 6, ...style }}>
+        {value}
+      </div>
+    </div>
+  );
+}
+function Mini({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div style={{ color: "#94a3b8", fontSize: 12 }}>{label}</div>
+      <div
+        style={{
+          fontWeight: 700,
+          marginTop: 5,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
+function Th({ children }: any) {
+  return (
+    <th
+      style={{
+        textAlign: "left",
+        color: "#94a3b8",
+        borderBottom: "1px solid #334155",
+        padding: 8,
+      }}
+    >
+      {children}
+    </th>
+  );
+}
+function Td({ children, colSpan }: any) {
+  return (
+    <td
+      colSpan={colSpan}
+      style={{
+        borderBottom: "1px solid #1e293b",
+        padding: 8,
+        verticalAlign: "top",
+        fontSize: 13,
+      }}
+    >
+      {children}
+    </td>
+  );
+}
+const panelStyle: CSSProperties = {
+  background: "#111827",
+  border: "1px solid #243044",
+  borderRadius: 12,
+  padding: 16,
+};
+const h2Style: CSSProperties = { fontSize: 18, marginBottom: 12 };
+const preStyle: CSSProperties = {
+  whiteSpace: "pre-wrap",
+  overflowX: "auto",
+  color: "#cbd5e1",
+  fontSize: 13,
+};
+const inputStyle: CSSProperties = {
+  background: "#0b1020",
+  color: "#e5e7eb",
+  border: "1px solid #334155",
+  borderRadius: 8,
+  padding: "10px 12px",
+};

@@ -1,0 +1,55 @@
+{
+  "user_id": "demo_user",
+  "strategy_id": "demo_strategy",
+  "job_id": "demo_job",
+  "mode": "backtest",
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT"
+  ],
+  "timeframe": "15s",
+  "bar_seconds": 15,
+  "strategy": {
+    "name": "QuantOS Breakout Retest",
+    "breakout_lookback": 20,
+    "retest_tolerance_pct": 0.001,
+    "min_setup_score": 6.5,
+    "max_retest_bars": 30,
+    "signal_cooldown_bars": 5,
+    "ttl_bars": 40,
+    "min_close_position": 0.5,
+    "stop_loss": {
+      "type": "atr_or_structure",
+      "atr_multiplier": 0.75,
+      "structure_buffer_pct": 0.25
+    },
+    "targets": {
+      "target1_R": 1.5,
+      "target2_R": 2.5
+    },
+    "risk": {
+      "risk_per_trade_pct": 1.0,
+      "max_daily_loss_pct": 3.0,
+      "max_open_positions": 5,
+      "max_symbol_notional": 10000
+    },
+    "reentry": {
+      "enabled": true,
+      "max_reentries": 1,
+      "cooldown_bars": 10
+    },
+    "trend_filter": {
+      "use_trend_filter": true,
+      "higher_timeframe": "5m",
+      "higher_timeframe_seconds": 300,
+      "fast_ema": 20,
+      "slow_ema": 50
+    }
+  },
+  "paths": {
+    "input_data": "data/sample_market_data.csv",
+    "output_dir": "outputs/demo_user/demo_job"
+  },
+  "input_data": "data/sample_market_data.csv",
+  "output_dir": "outputs/demo_user/demo_job"
+}

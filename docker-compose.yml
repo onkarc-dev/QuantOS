@@ -1,0 +1,155 @@
+# QuantOS — one-command local/production-candidate stack
+# Local: docker compose up --build
+# With monitoring: docker compose --profile production up --build
+
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: quantos_postgres
+    environment:
+      POSTGRES_DB: quantos
+      POSTGRES_USER: quantos
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-quantos_local_dev}
+    ports:
+      - "5432:5432"
+    volumes:
+      - quantos_pg:/var/lib/postgresql/data
+      - ./apps/api/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quantos -d quantos"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: quantos_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: quantos_api
+    ports:
+      - "8000:8000"
+    environment:
+      ENV: ${ENV:-production}
+      DATABASE_URL: postgresql://quantos:${POSTGRES_PASSWORD:-quantos_local_dev}@postgres:5432/quantos
+      REDIS_URL: redis://redis:6379/0
+      PRISMFLOW_SECRET_KEY: ${PRISMFLOW_SECRET_KEY:-change-this-before-public-deploy}
+      OUTPUTS_ROOT: /app/outputs
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      ACCESS_TOKEN_TTL_SECONDS: ${ACCESS_TOKEN_TTL_SECONDS:-900}
+      REFRESH_TTL_SECONDS: ${REFRESH_TTL_SECONDS:-2592000}
+      EMAIL_OTP_DEV_RETURN: ${EMAIL_OTP_DEV_RETURN:-false}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-no-reply@quantos.local}
+      SMTP_TLS: ${SMTP_TLS:-true}
+      ENFORCE_HTTPS: ${ENFORCE_HTTPS:-false}
+      LOG_FILE: /app/outputs/quantos_api.log
+    volumes:
+      - quantos_outputs:/app/outputs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+      args:
+        NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-http://localhost:8000}
+    container_name: quantos_web
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3000 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: quantos_worker
+    command: ["rq", "worker", "--url", "redis://redis:6379/0", "prismflow"]
+    environment:
+      ENV: ${ENV:-production}
+      DATABASE_URL: postgresql://quantos:${POSTGRES_PASSWORD:-quantos_local_dev}@postgres:5432/quantos
+      REDIS_URL: redis://redis:6379/0
+      PRISMFLOW_SECRET_KEY: ${PRISMFLOW_SECRET_KEY:-change-this-before-public-deploy}
+      OUTPUTS_ROOT: /app/outputs
+      EMAIL_OTP_DEV_RETURN: ${EMAIL_OTP_DEV_RETURN:-false}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-no-reply@quantos.local}
+      SMTP_TLS: ${SMTP_TLS:-true}
+      LOG_FILE: /app/outputs/quantos_worker.log
+    volumes:
+      - quantos_outputs:/app/outputs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: quantos_prometheus
+    profiles: ["production"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: quantos_grafana
+    profiles: ["production"]
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  quantos_pg:
+  quantos_outputs:

@@ -1,0 +1,12 @@
+{
+  "symbol": "DOGEUSDT",
+  "timeframe": "1m",
+  "binance_interval_used": "1m",
+  "rows": 21600,
+  "start_date": "2026-06-01",
+  "end_date": "2026-06-15",
+  "cached": false,
+  "real_binance_data": true,
+  "synthetic_data_used": false,
+  "note": "OHLCV candles are fetched from Binance REST in retryable chunks and cached locally. PRISM metadata columns are deterministic labels derived from candles."
+}

@@ -1,0 +1,40 @@
+{
+  "setup_name": "Breakout Retest Acceptance",
+  "setup_type": "Directional",
+  "direction": "Long",
+  "pod": "POD-1 Structural Expansion",
+  "entry": {
+    "type": "Retest",
+    "breakout_level": "previous_20_bar_high",
+    "retest_zone_atr_pct": 0.10,
+    "close_position_min": 0.60,
+    "setup_score_min": 6.5,
+    "close_above_vwap": true
+  },
+  "risk": {
+    "atr_multiplier": 1.2,
+    "stop_loss": "min(entry_price - ATR * atr_multiplier, retest_zone_low)",
+    "target1_R": 1.5,
+    "target2_R": 2.5
+  },
+  "score_weights": {
+    "structure": 0.25,
+    "positioning": 0.25,
+    "regime": 0.15,
+    "microstructure": 0.15,
+    "interaction": 0.20
+  },
+  "acceptance_filters": {
+    "liquidity_score_min": 0.60,
+    "volume_ratio_min": 1.20,
+    "spread_pct_max": 0.50,
+    "mps_state_not": "BLOCK",
+    "regime_not": "SHOCK",
+    "mse_state_not": "TREND_DOWN"
+  },
+  "ttl": {
+    "entry_ttl_bars_after_breakout": 5,
+    "trade_ttl_bars": 20,
+    "max_re_entries": 1
+  }
+}

@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+// This package directive is mandatory. It tells the compiler to create a 'marketdata' 
+// folder for your generated header files.
+package marketdata;
+
+// First version of the Trade message
+message Trade {
+  string exchange_id = 1;
+  string symbol = 2;
+  int64 timestamp_ns = 3;
+  double price = 4;
+  double volume = 5;
+  string trade_id = 6;
+}
+
+// Second version, renamed to avoid naming conflicts within the same package
+message TradeUpdate {
+  string symbol = 1; 
+  double price = 2;
+  double volume = 3;
+}

@@ -1,0 +1,43 @@
+# Build folders
+build/
+out/
+Release/
+Debug/
+
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.VC.db
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+
+# Binaries
+*.exe
+*.dll
+*.lib
+*.obj
+*.pdb
+*.ilk
+
+# Logs
+*.log
+
+# Runtime outputs
+trade_log.csv
+performance_summary.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+env/node_modules/
+.next/
+build/
+venv/
+__pycache__/
+*.pyc
+outputs/
