@@ -1,6 +1,7 @@
 # QuantOS API Dockerfile
-# Multi-stage build: C++ engines + Python FastAPI API
-# Render-compatible Ubuntu build/runtime
+# Render-safe backend deployment
+# Builds required C++ backtest engine.
+# Live C++ WebSocket engine is optional on Render Free because libwebsockets target detection can fail in hosted Linux builds.
 
 FROM ubuntu:22.04 AS cpp_builder
 
@@ -25,7 +26,11 @@ COPY proto/ ./proto/
 
 RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
     && cmake --build build --target prism_backtest -- -j$(nproc) \
-    && cmake --build build --target prism_live_paper_trading -- -j$(nproc)
+    && if cmake --build build --target prism_live_paper_trading -- -j$(nproc); then \
+        echo "Built optional prism_live_paper_trading"; \
+    else \
+        echo "Optional prism_live_paper_trading unavailable on this Render Linux build; continuing with API/backtest deployment"; \
+    fi
 
 FROM ubuntu:22.04
 
@@ -59,11 +64,18 @@ COPY configs/ ./configs/
 COPY data/ ./data/
 COPY scripts/ ./scripts/
 
-COPY --from=cpp_builder /build/build/prism_backtest /app/build/Release/prism_backtest
-COPY --from=cpp_builder /build/build/prism_live_paper_trading /app/build/Release/prism_live_paper_trading
+RUN mkdir -p /app/build/Release /app/outputs
 
-RUN chmod +x /app/build/Release/prism_backtest /app/build/Release/prism_live_paper_trading \
-    && mkdir -p /app/outputs
+COPY --from=cpp_builder /build/build/prism_backtest /app/build/Release/prism_backtest
+
+RUN if [ -f /build/build/prism_live_paper_trading ]; then \
+        cp /build/build/prism_live_paper_trading /app/build/Release/prism_live_paper_trading; \
+    else \
+        printf '#!/bin/sh\n\
+echo "Live C++ paper trading binary is unavailable on this Render build. Backtests/API are deployed. Use local Windows build or paid Linux VPS for live WebSocket engine."\n\
+exit 1\n' > /app/build/Release/prism_live_paper_trading; \
+    fi \
+    && chmod +x /app/build/Release/prism_backtest /app/build/Release/prism_live_paper_trading
 
 ENV OUTPUTS_ROOT=/app/outputs
 ENV ENGINE_BINARY_PATH=/app/build/Release/prism_backtest
