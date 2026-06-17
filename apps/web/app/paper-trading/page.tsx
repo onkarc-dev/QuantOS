@@ -423,7 +423,7 @@ export default function PaperTradingPage() {
       })) as LiveStatus;
       setStatus(r);
       setMessage(
-        "Session stopped. Final live paper report files generated in outputs/prismflow_cpp_heavy/.",
+        "Session stopped. Final live paper report was generated successfully.",
       );
     } catch (err) {
       setMessage(formatApiError(err));
@@ -459,21 +459,67 @@ export default function PaperTradingPage() {
   );
   const metrics = status.session_metrics || status.metrics || {};
   const liveConfig = status.live_config || {};
+
+  // Production-safe config display:
+  // Backend no longer exposes internal live_config/config_path for security.
+  // So the UI must read saved Strategy Builder parameters from /strategies.
+  const selectedStrategy = strategies.find((s) => s.id === selectedStrategyId);
+  const selectedConfig = selectedStrategy?.config || {};
+  const selectedRules = selectedConfig.strategy || selectedConfig || {};
+  const selectedRisk = selectedRules.risk || selectedConfig.risk || {};
+  const selectedTargets = selectedRules.targets || selectedConfig.targets || {};
+
+  const cfgLookback =
+    metrics.cfg_lookback ??
+    liveConfig.strategy?.breakout_lookback ??
+    selectedRules.breakout_lookback ??
+    selectedConfig.breakout_lookback ??
+    "-";
+
+  const cfgMinScore =
+    metrics.cfg_min_score ??
+    liveConfig.strategy?.min_setup_score ??
+    selectedRules.min_setup_score ??
+    selectedConfig.min_setup_score ??
+    "-";
+
+  const cfgRiskPct =
+    metrics.cfg_risk_pct ??
+    liveConfig.strategy?.risk?.risk_per_trade_pct ??
+    selectedRisk.risk_per_trade_pct ??
+    "-";
+
+  const cfgTarget1 =
+    liveConfig.strategy?.targets?.target1_R ??
+    selectedTargets.target1_R ??
+    "-";
+
+  const cfgTarget2 =
+    liveConfig.strategy?.targets?.target2_R ??
+    selectedTargets.target2_R ??
+    "-";
+
   const activeStrategyName =
     status.selected_strategy_name ||
     liveConfig.name ||
-    strategies.find((s) => s.id === selectedStrategyId)?.name ||
+    selectedStrategy?.name ||
+    selectedRules.name ||
     "Default C++ config";
+
   const activeStrategyId =
     status.selected_strategy_id ||
     liveConfig.strategy_id ||
-    strategies.find((s) => s.id === selectedStrategyId)?.user_strategy_id ||
+    selectedStrategy?.user_strategy_id ||
+    selectedConfig.user_strategy_id ||
+    selectedConfig.strategy_id ||
     selectedStrategyId ||
     "";
+
   const activeBarSeconds =
     metrics.cfg_bar_seconds ||
     liveConfig.bar_seconds ||
-    strategies.find((s) => s.id === selectedStrategyId)?.config?.bar_seconds ||
+    selectedConfig.bar_seconds ||
+    selectedStrategy?.config?.bar_seconds ||
     "-";
   const tradeRows = useMemo(() => buildTradeRows(events), [events]);
   const openPositions = useMemo(() => buildOpenPositions(status, tradeRows), [status, tradeRows]);
@@ -560,27 +606,15 @@ export default function PaperTradingPage() {
           <Mini label="Active" value={activeStrategyName} />
           <Mini
             label="Lookback"
-            value={String(
-              metrics.cfg_lookback ??
-                liveConfig.strategy?.breakout_lookback ??
-                "-",
-            )}
+            value={String(cfgLookback)}
           />
           <Mini
             label="Min score"
-            value={String(
-              metrics.cfg_min_score ??
-                liveConfig.strategy?.min_setup_score ??
-                "-",
-            )}
+            value={String(cfgMinScore)}
           />
           <Mini
             label="Risk %"
-            value={String(
-              metrics.cfg_risk_pct ??
-                liveConfig.strategy?.risk?.risk_per_trade_pct ??
-                "-",
-            )}
+            value={String(cfgRiskPct)}
           />
           <Mini
             label="Bar length"
@@ -911,18 +945,18 @@ export default function PaperTradingPage() {
               />
               <SummaryRow
                 label="Lookback / Min score"
-                value={`${metrics.cfg_lookback ?? liveConfig.strategy?.breakout_lookback ?? "-"} / ${metrics.cfg_min_score ?? liveConfig.strategy?.min_setup_score ?? "-"}`}
+                value={`${cfgLookback} / ${cfgMinScore}`}
               />
               <SummaryRow
                 label="Risk / Targets"
-                value={`${metrics.cfg_risk_pct ?? liveConfig.strategy?.risk?.risk_per_trade_pct ?? "-"}% · ${liveConfig.strategy?.targets?.target1_R ?? "-"}R / ${liveConfig.strategy?.targets?.target2_R ?? "-"}R`}
+                value={`${cfgRiskPct}% · ${cfgTarget1}R / ${cfgTarget2}R`}
               />
               <SummaryRow
                 label="Config file"
                 value={
-                  status.config_path
-                    ? "Saved for this live session"
-                    : "Not created yet"
+                  status.session_id && status.status !== "idle"
+                    ? "Prepared internally"
+                    : "Waiting for live session"
                 }
               />
             </tbody>
