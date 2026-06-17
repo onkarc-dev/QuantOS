@@ -1,4 +1,4 @@
-use client';
+'use client';
 import { useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { ApiError, api, formatApiError, saveAuth } from '../../lib/api';
