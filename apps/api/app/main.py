@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.db import init_db
-from app.routes import auth, strategies, jobs, reports, analytics, coach, journal, live_paper, competitions
+from app.routes import auth, strategies, jobs, reports, analytics, coach, journal, live_paper, competitions, trader_profile, market_intel
 from app.routes.system import router as system_router
 from app.services.job_queue import build_queue
 import app.services.job_queue as jq_module
@@ -38,16 +38,16 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="QuantOS API",
-    version="3.1.0",
+    version="3.2.0",
     description=(
         "QuantOS — Personal Quant Operating System for paper trading, "
-        "backtesting, analytics, competitions, and disciplined trader review. "
-        "Paper/backtest analytics only. Not financial advice. No real-money execution."
+        "backtesting, analytics, competitions, alternative data, regime detection, "
+        "and disciplined trader review. Paper/backtest analytics only. "
+        "Not financial advice. No real-money execution."
     ),
     lifespan=lifespan,
 )
 
-# CORS — restrict in production via CORS_ORIGINS env var
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins if settings.cors_origins else ["*"],
@@ -96,10 +96,12 @@ def health():
     return {
         "status": "ok",
         "product": "QuantOS",
-        "version": "3.1.0",
+        "version": "3.2.0",
         "safe_mode": True,
         "real_money_enabled": False,
         "competitions_enabled": True,
+        "trader_profile_enabled": True,
+        "market_intel_enabled": True,
         "disclaimer": "Paper/backtest analytics only. Not financial advice.",
     }
 
@@ -114,3 +116,5 @@ app.include_router(journal.router, prefix="/journal", tags=["journal-behavior"])
 app.include_router(system_router, prefix="/system", tags=["system"])
 app.include_router(live_paper.router, prefix="/live-paper", tags=["live-paper"])
 app.include_router(competitions.router, prefix="/competitions", tags=["competitions"])
+app.include_router(trader_profile.router, prefix="/trader-profile", tags=["trader-profile"])
+app.include_router(market_intel.router, prefix="/market-intel", tags=["market-intel"])
