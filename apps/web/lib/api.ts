@@ -1,13 +1,16 @@
 export const API_BASE =
   process.env.NEXT_PUBLIC_API_URL ||
   process.env.NEXT_PUBLIC_API_BASE ||
-  'https://quantos-api.onrender.com';
+  'http://127.0.0.1:8000';
 
-const TOKEN_KEY = 'prismflow_token';
-const USER_KEY = 'prismflow_user';
+const TOKEN_KEY = 'quantos_token';
+const USER_KEY = 'quantos_user';
 const REFRESH_KEY = 'quantos_refresh_token';
 
-const GENERIC_SERVICE_ERROR = 'QuantOS service is temporarily unavailable. Please try again shortly.';
+const LEGACY_TOKEN_KEY = 'prismflow_token';
+const LEGACY_USER_KEY = 'prismflow_user';
+
+const GENERIC_SERVICE_ERROR = 'QuantOS service is temporarily unavailable. Please make sure the backend is running.';
 const GENERIC_REQUEST_ERROR = 'Something went wrong. Please try again.';
 
 export type AuthUser = {
@@ -28,13 +31,13 @@ export class ApiError extends Error {
 
 export function getToken(): string {
   if (typeof window === 'undefined') return '';
-  return localStorage.getItem(TOKEN_KEY) || localStorage.getItem('token') || '';
+  return localStorage.getItem(TOKEN_KEY) || localStorage.getItem(LEGACY_TOKEN_KEY) || localStorage.getItem('token') || '';
 }
 
 export function getUser(): AuthUser | null {
   if (typeof window === 'undefined') return null;
   try {
-    return JSON.parse(localStorage.getItem(USER_KEY) || 'null');
+    return JSON.parse(localStorage.getItem(USER_KEY) || localStorage.getItem(LEGACY_USER_KEY) || 'null');
   } catch {
     return null;
   }
@@ -46,9 +49,13 @@ export function saveAuth(data: { token?: string; access_token?: string; refresh_
   if (access) {
     localStorage.setItem(TOKEN_KEY, access);
     localStorage.setItem('token', access);
+    localStorage.removeItem(LEGACY_TOKEN_KEY);
   }
   if (data?.refresh_token) localStorage.setItem(REFRESH_KEY, data.refresh_token);
-  if (data?.user) localStorage.setItem(USER_KEY, JSON.stringify(data.user));
+  if (data?.user) {
+    localStorage.setItem(USER_KEY, JSON.stringify(data.user));
+    localStorage.removeItem(LEGACY_USER_KEY);
+  }
 }
 
 export function clearAuth() {
@@ -57,6 +64,8 @@ export function clearAuth() {
   localStorage.removeItem('token');
   localStorage.removeItem(USER_KEY);
   localStorage.removeItem(REFRESH_KEY);
+  localStorage.removeItem(LEGACY_TOKEN_KEY);
+  localStorage.removeItem(LEGACY_USER_KEY);
   localStorage.removeItem('prismflow_last_job');
 }
 
@@ -116,7 +125,7 @@ function normalizeError(data: unknown, status: number): string {
 }
 
 function containsInternalDetails(message: string): boolean {
-  return /https?:\/\/|trycloudflare|localhost|127\.0\.0\.1|0\.0\.0\.0|:\d{2,5}|uvicorn|traceback|stack trace|prism_live_paper_trading|\.exe|cannot reach quantos api|please start the backend|backend|api base|next_public/i.test(message);
+  return /trycloudflare|0\.0\.0\.0|uvicorn|traceback|stack trace|prism_live_paper_trading|\.exe|cannot reach quantos api|please start the backend|backend|api base|next_public/i.test(message);
 }
 
 function sanitizeApiMessage(message: string, status: number): string {
@@ -219,6 +228,5 @@ export async function api(path: string, options: RequestInit = {}) {
     }
     throw new ApiError(message, res.status);
   }
-
   return data;
 }
