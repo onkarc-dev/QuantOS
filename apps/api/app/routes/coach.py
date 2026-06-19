@@ -10,18 +10,30 @@ from app.services.coach import read_coach_report
 router = APIRouter()
 
 
+def _llm_status_contract(report: dict) -> dict:
+    metrics = report.get("metrics") or {}
+    return {
+        "provider": "gemini" if settings.has_gemini() else "deterministic_fallback",
+        "model": settings.gemini_model if settings.has_gemini() else "quantos_rule_engine",
+        "status": "configured_pending_generation" if settings.has_gemini() else "fallback_rule_based_active",
+        "verdict": report.get("final_verdict"),
+        "narrative": "Quant Coach explanation is generated from expectancy, drawdown, stability, stress testing, and discipline metrics.",
+        "strengths": report.get("strengths") or [],
+        "risks": report.get("weaknesses") or [],
+        "next_steps": report.get("next_actions") or [],
+        "metrics_used": {
+            "trades": metrics.get("trades"),
+            "avg_R": metrics.get("avg_R"),
+            "win_rate": metrics.get("win_rate"),
+            "profit_factor": metrics.get("profit_factor"),
+            "max_drawdown_R": metrics.get("max_drawdown_R"),
+        },
+        "research_only": True,
+    }
+
+
 @router.get("/{job_id}/coach-report", summary="Get Quant Coach analysis for a completed job")
 def coach_report(job_id: str, user=Depends(current_user)):
-    """
-    Returns full Quant Coach report including:
-    - Expectancy (avg R)
-    - Monte Carlo (p50, p05, p95, p99 final R and drawdown)
-    - Walk-forward stability test
-    - Stress test (slippage, volatility shock, etc.)
-    - Lifestyle fit score (signals/week, monitoring burden)
-    - Behavioral discipline metrics
-    - Objective pass/fail verdict
-    """
     p = "?" if not settings.is_postgres() else "%s"
     with get_conn() as conn:
         job_row = conn.execute(
@@ -43,12 +55,13 @@ def coach_report(job_id: str, user=Depends(current_user)):
             raise HTTPException(status_code=500, detail=f"Could not generate Quant Coach report: {e}")
     if not report_path.exists():
         raise HTTPException(status_code=404, detail="Quant Coach report not found. Run backtest first.")
-    return json.loads(report_path.read_text(encoding="utf-8"))
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["llm_coach"] = _llm_status_contract(report)
+    return report
 
 
-@router.get("/{job_id}/strengths-weaknesses", summary="AI-analyzed strategy strengths and weaknesses")
+@router.get("/{job_id}/strengths-weaknesses", summary="Strategy strengths and weaknesses")
 def strengths_weaknesses(job_id: str, user=Depends(current_user)):
-    """Returns structured analysis of what the strategy does well vs. poorly."""
     p = "?" if not settings.is_postgres() else "%s"
     with get_conn() as conn:
         row = conn.execute(
