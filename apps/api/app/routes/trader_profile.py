@@ -6,9 +6,11 @@ augmented with an external model provider.
 """
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Body, Depends
+from pydantic import BaseModel
 
 from app.db import get_conn, row_to_dict
 from app.deps import current_user
@@ -35,6 +37,15 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except Exception:
         return default
+
+
+def _safe_json(value: Any, fallback: Any):
+    try:
+        if isinstance(value, str):
+            return json.loads(value)
+        return value if value is not None else fallback
+    except Exception:
+        return fallback
 
 
 def _grade_profile(return_pct: float, max_dd: float, discipline: float, competitions: int) -> str:
@@ -92,13 +103,17 @@ def _coach_findings(profile: Dict[str, Any], entries: List[Dict[str, Any]]) -> D
     if total_comp < 3:
         verdict = "NEEDS_MORE_DATA"
 
+    narrative = _llm_ready_narrative(verdict, strengths, weaknesses, actions)
+
     return {
-        "coach_version": "v2-rule-based-foundation",
+        "coach_version": "v2-hybrid-rule-based-llm-ready",
+        "llm_status": "fallback_rule_based_active",
         "verdict": verdict,
         "summary": (
             "This review is based on your QuantOS paper-trading competitions, risk-adjusted Quant Score, "
             "drawdown behavior, discipline score, and trade quality. It is not financial advice."
         ),
+        "narrative": narrative,
         "strengths": strengths,
         "weaknesses": weaknesses,
         "next_actions": actions,
@@ -107,10 +122,44 @@ def _coach_findings(profile: Dict[str, Any], entries: List[Dict[str, Any]]) -> D
             "Add trade-level journal classification",
             "Add market regime context",
             "Add news/social sentiment context",
-            "Replace rule-only review with optional LLM narrative generation",
+            "Connect optional LLM provider when OPENAI_API_KEY or another provider is configured",
         ],
         "recent_entries_used": len(entries),
     }
+
+
+def _llm_ready_narrative(verdict: str, strengths: List[str], weaknesses: List[str], actions: List[str]) -> str:
+    return (
+        f"Verdict: {verdict}. Your current paper-trading record should be treated as a learning signal, not proof of a real-money edge. "
+        f"Main strength: {strengths[0] if strengths else 'you are tracking performance systematically'}. "
+        f"Main weakness: {weaknesses[0] if weaknesses else 'sample size is still limited'}. "
+        f"Next step: {actions[0] if actions else 'repeat the same process over more sessions before changing rules'}."
+    )
+
+
+class TradeReviewRequest(BaseModel):
+    symbol: str = "BTCUSDT"
+    side: str = "LONG"
+    entry: float = 0
+    exit: float = 0
+    stop: float = 0
+    target: float = 0
+    r_multiple: float = 0
+    pnl: float = 0
+    setup_score: float = 0
+    rule_followed: bool = True
+    note: str = ""
+
+
+class StrategyAdviceRequest(BaseModel):
+    strategy_name: str = "QuantOS Strategy"
+    trades: int = 0
+    win_rate_pct: float = 0
+    avg_r: float = 0
+    gross_r: float = 0
+    max_drawdown_r: float = 0
+    profit_factor: float = 0
+    regime: str = "UNKNOWN"
 
 
 @router.get("/me", summary="Current trader profile")
@@ -193,11 +242,93 @@ def _badges_preview(stats: Dict[str, Any]) -> List[Dict[str, str]]:
     return badges
 
 
+@router.get("/me/achievements", summary="Current user's achievements")
+def achievements(user=Depends(current_user)):
+    profile = my_profile(user)
+    return {"achievements": profile.get("badges_preview", []), "profile": profile}
+
+
 @router.get("/me/ai-coach-v2", summary="AI Coach v2 trader review")
 def ai_coach_v2(user=Depends(current_user)):
     profile = my_profile(user)
     findings = _coach_findings(profile["stats"], profile.get("recent_competitions", []))
+    return {"profile": profile, "ai_coach_v2": findings}
+
+
+@router.post("/ai-coach-v2/trade-review", summary="Trade-by-trade AI-style review")
+def trade_review(payload: TradeReviewRequest, user=Depends(current_user)):
+    issues: List[str] = []
+    positives: List[str] = []
+    next_steps: List[str] = []
+
+    if payload.rule_followed:
+        positives.append("The trade was marked as rule-followed, which supports discipline tracking.")
+    else:
+        issues.append("The trade was marked as rule-broken. This matters more than the PnL outcome.")
+        next_steps.append("Write the exact rule that was broken before taking another similar setup.")
+
+    if payload.r_multiple >= 2:
+        positives.append("Strong R-multiple. This trade contributed positively to expectancy.")
+    elif payload.r_multiple < -1:
+        issues.append("Loss exceeded -1R. Check stop execution, slippage, or position sizing.")
+        next_steps.append("Review whether the stop was respected exactly as planned.")
+    elif -1 <= payload.r_multiple < 0:
+        issues.append("Small controlled loss. Acceptable if it followed the system.")
+
+    if payload.setup_score and payload.setup_score < 6:
+        issues.append("Setup score was weak. Avoid forcing low-quality trades during competitions.")
+    elif payload.setup_score >= 8:
+        positives.append("High setup score. This is the kind of trade sample QuantOS should separate from weak setups.")
+
+    if payload.entry and payload.stop and abs(payload.entry - payload.stop) == 0:
+        issues.append("Entry and stop are identical or invalid. Risk cannot be measured cleanly.")
+
+    if not next_steps:
+        next_steps.append("Tag this trade by setup type and compare it against at least 30 similar trades.")
+
     return {
-        "profile": profile,
-        "ai_coach_v2": findings,
+        "coach_version": "v2-trade-review-rule-based-llm-ready",
+        "llm_status": "fallback_rule_based_active",
+        "symbol": payload.symbol.upper(),
+        "verdict": "GOOD_PROCESS" if not issues or (payload.rule_followed and payload.r_multiple >= -1) else "PROCESS_REVIEW_REQUIRED",
+        "narrative": f"This {payload.side.upper()} trade produced {payload.r_multiple:.2f}R. The main process signal is: {(positives or issues)[0]}",
+        "positives": positives,
+        "issues": issues,
+        "next_steps": next_steps,
+        "not_financial_advice": True,
+    }
+
+
+@router.post("/ai-coach-v2/strategy-advice", summary="Strategy improvement suggestions")
+def strategy_advice(payload: StrategyAdviceRequest, user=Depends(current_user)):
+    suggestions: List[str] = []
+    risks: List[str] = []
+
+    if payload.trades < 30:
+        risks.append("Sample size is too small. Do not trust performance yet.")
+        suggestions.append("Collect at least 30-100 trades before judging this strategy.")
+    if payload.avg_r <= 0:
+        risks.append("Average R is not positive, so expectancy is currently weak.")
+        suggestions.append("Tighten entry quality, review stop placement, and avoid low setup-score trades.")
+    if payload.max_drawdown_r > 10:
+        risks.append("Drawdown is high relative to a paper-trading learning system.")
+        suggestions.append("Reduce risk per trade or add a daily loss stop before competitions.")
+    if payload.win_rate_pct < 35 and payload.avg_r < 0.5:
+        suggestions.append("Either improve win rate through stricter filters or increase average winner size.")
+    if payload.profit_factor and payload.profit_factor < 1.2:
+        suggestions.append("Profit factor is not strong enough. Test the strategy across different regimes before using it in challenges.")
+    if payload.regime in {"HIGH_VOL_RANGE", "MIXED_RANGE"}:
+        suggestions.append("This regime may create false breakouts. Consider adding volatility and trend confirmation filters.")
+    if not suggestions:
+        suggestions.append("Keep rules stable and run walk-forward testing instead of changing many parameters at once.")
+
+    return {
+        "coach_version": "v2-strategy-advice-rule-based-llm-ready",
+        "llm_status": "fallback_rule_based_active",
+        "strategy_name": payload.strategy_name,
+        "verdict": "PROMISING_TEST_MORE" if not risks and payload.avg_r > 0 else "NEEDS_IMPROVEMENT",
+        "narrative": f"{payload.strategy_name} should be improved through controlled testing, not random parameter changes. The strongest recommendation is: {suggestions[0]}",
+        "suggestions": suggestions,
+        "risks": risks,
+        "not_financial_advice": True,
     }
