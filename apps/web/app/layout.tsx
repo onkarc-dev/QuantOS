@@ -15,7 +15,7 @@ const NAV = [
   { href: '/backtests', label: 'Backtests' },
   { href: '/paper-trading', label: 'Paper Trading' },
   { href: '/analytics', label: 'Analytics' },
-  { href: '/ai-coach-v2', label: 'Quant Coach' },
+  { href: '/quant-coach', label: 'Quant Coach' },
   { href: '/alternative-data', label: 'Market Intel' },
   { href: '/regime-dashboard', label: 'Regime' },
   { href: '/competitions', label: 'Competitions' },
