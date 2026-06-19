@@ -1,4 +1,4 @@
-"""PRISMFlow database layer.
+"""QuantOS database layer.
 
 Supports:
 - SQLite (default, zero-config, used for local demo and CI)
@@ -14,13 +14,9 @@ The public interface is the same for both backends:
 from __future__ import annotations
 
 import hashlib
-import json
-import uuid
 import datetime
 import sqlite3
-from pathlib import Path
-from typing import Any, Dict, List, Optional
-import datetime
+from typing import Any, Dict
 
 from app.core.config import settings
 
@@ -64,7 +60,6 @@ def _get_pg_conn():
         import psycopg2.extras
         conn = psycopg2.connect(settings.database_url)
         conn.autocommit = False
-        # Use DictCursor so rows behave like dicts (same as sqlite3.Row)
         conn.cursor_factory = psycopg2.extras.RealDictCursor
         return conn
     except ImportError:
@@ -76,6 +71,54 @@ def _get_pg_conn():
 
 
 # ─── Schema ───────────────────────────────────────────────────────────────────
+
+_COMPETITION_DDL = """
+CREATE TABLE IF NOT EXISTS competitions (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    description TEXT,
+    status TEXT NOT NULL DEFAULT 'draft',
+    start_at TEXT NOT NULL,
+    end_at TEXT NOT NULL,
+    starting_balance REAL NOT NULL DEFAULT 100000,
+    allowed_symbols_json TEXT NOT NULL DEFAULT '[]',
+    rules_json TEXT NOT NULL DEFAULT '{}',
+    prize_json TEXT NOT NULL DEFAULT '{}',
+    created_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS competition_entries (
+    id TEXT PRIMARY KEY,
+    competition_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    display_name TEXT,
+    starting_balance REAL NOT NULL DEFAULT 100000,
+    final_equity REAL NOT NULL DEFAULT 100000,
+    return_pct REAL NOT NULL DEFAULT 0,
+    max_drawdown_pct REAL NOT NULL DEFAULT 0,
+    total_trades INTEGER NOT NULL DEFAULT 0,
+    win_rate_pct REAL NOT NULL DEFAULT 0,
+    gross_r REAL NOT NULL DEFAULT 0,
+    discipline_score REAL NOT NULL DEFAULT 100,
+    risk_score REAL NOT NULL DEFAULT 100,
+    quant_score REAL NOT NULL DEFAULT 0,
+    rank INTEGER,
+    status TEXT NOT NULL DEFAULT 'registered',
+    joined_at TEXT NOT NULL,
+    completed_at TEXT,
+    UNIQUE(competition_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS competition_trade_snapshots (
+    id TEXT PRIMARY KEY,
+    competition_id TEXT NOT NULL,
+    entry_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    source_session_id TEXT,
+    trade_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+"""
 
 _SQLITE_DDL = """
 CREATE TABLE IF NOT EXISTS users (
@@ -171,7 +214,6 @@ CREATE TABLE IF NOT EXISTS onboarding_state (
     updated_at TEXT NOT NULL,
     FOREIGN KEY(user_id) REFERENCES users(id)
 );
-
 CREATE TABLE IF NOT EXISTS registration_otps (
     email TEXT PRIMARY KEY,
     name TEXT,
@@ -186,7 +228,6 @@ CREATE TABLE IF NOT EXISTS password_reset_otps (
     expires_at TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
-
 CREATE TABLE IF NOT EXISTS live_wallets (
     user_id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
@@ -209,7 +250,7 @@ CREATE TABLE IF NOT EXISTS live_trades (
     trade_json TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
-"""
+""" + _COMPETITION_DDL
 
 _POSTGRES_DDL = """
 CREATE TABLE IF NOT EXISTS users (
@@ -297,7 +338,6 @@ CREATE TABLE IF NOT EXISTS onboarding_state (
     completed_steps_json TEXT NOT NULL DEFAULT '[]',
     updated_at TEXT NOT NULL
 );
-
 CREATE TABLE IF NOT EXISTS registration_otps (
     email TEXT PRIMARY KEY,
     name TEXT,
@@ -312,7 +352,6 @@ CREATE TABLE IF NOT EXISTS password_reset_otps (
     expires_at TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
-
 CREATE TABLE IF NOT EXISTS live_wallets (
     user_id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
@@ -335,7 +374,7 @@ CREATE TABLE IF NOT EXISTS live_trades (
     trade_json TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
-"""
+""" + _COMPETITION_DDL
 
 
 def _expiry() -> str:
@@ -363,11 +402,15 @@ def _seed_demo_user_sqlite(conn):
     demo_id = "demo_user"
     conn.execute(
         "INSERT OR IGNORE INTO users(id,email,name,password_hash,onboarding_completed,created_at) VALUES(?,?,?,?,?,?)",
-        (demo_id, "demo@prismflow.com", "Demo User", hash_password("demo123"), 0, now())
+        (demo_id, "demo@quantos.local", "Demo User", hash_password("demo123"), 0, now())
     )
     conn.execute(
         "UPDATE users SET email=? WHERE email=?",
-        ("demo@prismflow.com", "demo@prismflow.local")
+        ("demo@quantos.local", "demo@prismflow.local")
+    )
+    conn.execute(
+        "UPDATE users SET email=? WHERE email=?",
+        ("demo@quantos.local", "demo@prismflow.com")
     )
     conn.execute(
         "INSERT OR IGNORE INTO onboarding_state(user_id,step,completed_steps_json,updated_at) VALUES(?,?,?,?)",
@@ -379,20 +422,22 @@ def _init_postgres():
     conn = _get_pg_conn()
     try:
         cur = conn.cursor()
-        # Execute each CREATE TABLE separately for postgres
         for stmt in _POSTGRES_DDL.strip().split(";"):
             stmt = stmt.strip()
             if stmt:
                 cur.execute(stmt)
-        # Seed demo user
         cur.execute("""
             INSERT INTO users(id,email,name,password_hash,onboarding_completed,created_at)
             VALUES(%s,%s,%s,%s,%s,%s)
             ON CONFLICT(id) DO NOTHING
-        """, ("demo_user", "demo@prismflow.com", "Demo User", hash_password("demo123"), 0, now()))
+        """, ("demo_user", "demo@quantos.local", "Demo User", hash_password("demo123"), 0, now()))
         cur.execute(
             "UPDATE users SET email=%s WHERE email=%s",
-            ("demo@prismflow.com", "demo@prismflow.local")
+            ("demo@quantos.local", "demo@prismflow.local")
+        )
+        cur.execute(
+            "UPDATE users SET email=%s WHERE email=%s",
+            ("demo@quantos.local", "demo@prismflow.com")
         )
         cur.execute("""
             INSERT INTO onboarding_state(user_id,step,completed_steps_json,updated_at)
