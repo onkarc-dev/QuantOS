@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { api, formatApiError } from '../../lib/api';
+import QuantCoachVisuals from '../../components/QuantCoachVisuals';
 
 function cleanLabel(value?: string) {
   return String(value || '').replaceAll('_', ' ');
@@ -23,7 +24,7 @@ function CoachBubble({ title, text }: { title: string; text: string }) {
   </div>;
 }
 
-export default function AICoachV2Page() {
+export default function QuantCoachPage() {
   const [data, setData] = useState<any>(null);
   const [tradeReview, setTradeReview] = useState<any>(null);
   const [strategyAdvice, setStrategyAdvice] = useState<any>(null);
@@ -76,12 +77,12 @@ export default function AICoachV2Page() {
     pill: { display: 'inline-block', background: '#312e81', border: '1px solid #6366f155', borderRadius: 999, padding: '5px 10px', color: '#c4b5fd', fontSize: 12, marginBottom: 10 },
   };
 
-  if (loading) return <div style={s.page}><div style={s.wrap}><h1 style={s.h1}>Loading AI Coach…</h1></div></div>;
+  if (loading) return <div style={s.page}><div style={s.wrap}><h1 style={s.h1}>Loading Quant Coach…</h1></div></div>;
 
   return <div style={s.page}><div style={s.wrap}>
-    <Link href="/dashboard" style={s.link}>← Dashboard</Link><Link href="/trader-profile" style={s.link}>Trader Profile</Link><Link href="/alternative-data" style={s.link}>Market Context</Link>
-    <h1 style={s.h1}>AI Quant Coach</h1>
-    <p style={s.muted}>Professional coaching for paper-trading behavior, strategy process, risk discipline, and improvement loops. No raw developer JSON. No financial advice.</p>
+    <Link href="/dashboard" style={s.link}>← Command Center</Link><Link href="/trader-profile" style={s.link}>Trader Profile</Link><Link href="/alternative-data" style={s.link}>Market Context</Link>
+    <h1 style={s.h1}>Quant Coach</h1>
+    <p style={s.muted}>Professional coaching for paper-trading behavior, strategy process, risk discipline, and improvement loops. Visuals explain what the text means.</p>
     {msg && <div style={s.danger}>{msg}</div>}
 
     <div style={s.card}>
@@ -89,6 +90,8 @@ export default function AICoachV2Page() {
       <h2 style={{ marginTop: 0 }}>{cleanLabel(coach.verdict || 'Needs more data')}</h2>
       <CoachBubble title="QuantOS Coach Review" text={coach.narrative || coach.summary || 'I need more paper-trading history before giving a strong review. Start with one backtest or one paper session, then come back here for a process review.'} />
     </div>
+
+    <QuantCoachVisuals />
 
     <div style={s.grid}>
       <div style={s.card}><h3>Strengths</h3><BulletList items={coach.strengths} empty="No strong strengths detected yet. Build more trade history." /></div>
