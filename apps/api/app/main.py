@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.db import init_db
-from app.routes import auth, strategies, jobs, reports, analytics, coach, journal, live_paper, competitions, trader_profile, market_intel, market_context
+from app.routes import auth, strategies, jobs, reports, analytics, coach, journal, live_paper, competitions, trader_profile, market_intel, market_context, organizations, admin, growth
 from app.routes.system import router as system_router
 from app.services.job_queue import build_queue
 import app.services.job_queue as jq_module
@@ -27,7 +27,6 @@ _error_count = 0
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup and shutdown lifecycle."""
     init_db()
     jq_module.queue = build_queue()
     logger.info("DB backend: %s", settings.db_backend)
@@ -38,12 +37,11 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="QuantOS API",
-    version="3.3.0",
+    version="3.4.0",
     description=(
-        "QuantOS — Personal Quant Operating System for paper trading, "
-        "backtesting, analytics, competitions, alternative data, market context, "
-        "regime detection, and disciplined trader review. Paper/backtest analytics only. "
-        "Not financial advice. No real-money execution."
+        "QuantOS — Personal Quant Operating System for paper trading, backtesting, analytics, "
+        "competitions, alternative data, market context, organizations, admin monitoring, "
+        "referrals, and growth foundations. Paper/backtest analytics only. Not financial advice."
     ),
     lifespan=lifespan,
 )
@@ -96,13 +94,16 @@ def health():
     return {
         "status": "ok",
         "product": "QuantOS",
-        "version": "3.3.0",
+        "version": "3.4.0",
         "safe_mode": True,
         "real_money_enabled": False,
         "competitions_enabled": True,
         "trader_profile_enabled": True,
         "market_intel_enabled": True,
         "market_context_enabled": True,
+        "organizations_enabled": True,
+        "admin_foundation_enabled": True,
+        "growth_foundation_enabled": True,
         "disclaimer": "Paper/backtest analytics only. Not financial advice.",
     }
 
@@ -120,3 +121,6 @@ app.include_router(competitions.router, prefix="/competitions", tags=["competiti
 app.include_router(trader_profile.router, prefix="/trader-profile", tags=["trader-profile"])
 app.include_router(market_intel.router, prefix="/market-intel", tags=["market-intel"])
 app.include_router(market_context.router, prefix="/market-context", tags=["market-context"])
+app.include_router(organizations.router, prefix="/organizations", tags=["organizations"])
+app.include_router(admin.router, prefix="/admin", tags=["admin"])
+app.include_router(growth.router, prefix="/growth", tags=["growth"])
