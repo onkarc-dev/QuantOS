@@ -5,18 +5,23 @@ import AuthProvider from '../components/AuthProvider';
 import ProfileMenu from '../components/ProfileMenu';
 
 export const metadata: Metadata = {
-  title: 'QuantOS — Paper Trading Platform',
-  description: 'Personal Quant Research Paper Trading Platform. Not financial advice.',
+  title: 'QuantOS — Personal Quant Operating System',
+  description: 'Paper-trading quant research, analytics, competitions, AI coaching, and market intelligence. Not financial advice.',
 };
 
 const NAV = [
-  { href: '/dashboard', label: 'Dashboard' },
-  { href: '/strategy-builder', label: 'Strategy Builder' },
+  { href: '/dashboard', label: 'Command Center' },
+  { href: '/strategy-builder', label: 'Strategy' },
   { href: '/backtests', label: 'Backtests' },
-  { href: '/quant-coach', label: 'Quant Coach' },
   { href: '/paper-trading', label: 'Paper Trading' },
-  { href: '/trade-journal', label: 'Journal' },
   { href: '/analytics', label: 'Analytics' },
+  { href: '/ai-coach-v2', label: 'AI Coach' },
+  { href: '/alternative-data', label: 'Market Intel' },
+  { href: '/regime-dashboard', label: 'Regime' },
+  { href: '/competitions', label: 'Competitions' },
+  { href: '/achievements', label: 'Achievements' },
+  { href: '/trader-profile', label: 'Profile' },
+  { href: '/admin', label: 'Admin' },
 ];
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -29,31 +34,32 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           padding: '0 24px',
           display: 'flex',
           alignItems: 'center',
-          height: 56,
+          minHeight: 56,
           gap: 0,
           position: 'sticky' as const,
           top: 0,
           zIndex: 100,
         }}>
-          <Link href="/" style={{
-            fontWeight: 800,
+          <Link href="/dashboard" style={{
+            fontWeight: 900,
             fontSize: 18,
             color: '#6366f1',
             textDecoration: 'none',
-            marginRight: 32,
+            marginRight: 22,
             letterSpacing: -0.5,
+            whiteSpace: 'nowrap' as const,
           }}>
             Quant<span style={{ color: '#8b5cf6' }}>OS</span>
           </Link>
-          <div style={{ display: 'flex', gap: 4, flex: 1, overflowX: 'auto' as const }}>
+          <div style={{ display: 'flex', gap: 4, flex: 1, overflowX: 'auto' as const, padding: '8px 0' }}>
             {NAV.map(({ href, label }) => (
               <Link key={href} href={href} style={{
                 color: '#94a3b8',
                 textDecoration: 'none',
-                padding: '6px 14px',
+                padding: '6px 10px',
                 borderRadius: 8,
-                fontSize: 13,
-                fontWeight: 500,
+                fontSize: 12,
+                fontWeight: 650,
                 whiteSpace: 'nowrap' as const,
               }}>
                 {label}
@@ -62,12 +68,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </div>
           <div style={{
             fontSize: 11,
-            color: '#555',
+            color: '#94a3b8',
             background: '#1a1a2e',
             border: '1px solid #2a2a4a',
             borderRadius: 6,
             padding: '4px 10px',
             whiteSpace: 'nowrap' as const,
+            marginLeft: 10,
           }}>
             📄 Paper only · No real money
           </div>
