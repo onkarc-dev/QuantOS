@@ -37,7 +37,7 @@ export default function TopNav() {
       fontWeight: 900,
       fontSize: 18,
       color: '#6366f1',
-      textDecoration: 'none',
+      textDecorationLine: 'none',
       marginRight: 22,
       letterSpacing: -0.5,
       whiteSpace: 'nowrap',
@@ -49,7 +49,7 @@ export default function TopNav() {
         const active = pathname === href || pathname.startsWith(href + '/');
         return <Link key={href} href={href} style={{
           color: active ? '#ffffff' : '#94a3b8',
-          textDecoration: active ? 'underline' : 'none',
+          textDecorationLine: active ? 'underline' : 'none',
           textUnderlineOffset: 7,
           textDecorationThickness: 2,
           background: active ? '#312e81' : 'transparent',
