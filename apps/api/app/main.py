@@ -1,4 +1,4 @@
-"""PRISMFlow FastAPI application entry point."""
+"""QuantOS FastAPI application entry point."""
 from __future__ import annotations
 
 import time
@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.db import init_db
-from app.routes import auth, strategies, jobs, reports, analytics, coach, journal, live_paper
+from app.routes import auth, strategies, jobs, reports, analytics, coach, journal, live_paper, competitions
 from app.routes.system import router as system_router
 from app.services.job_queue import build_queue
 import app.services.job_queue as jq_module
@@ -28,22 +28,20 @@ _error_count = 0
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown lifecycle."""
-    # Initialize database schema
     init_db()
-    # Wire up best available job queue
     jq_module.queue = build_queue()
     logger.info("DB backend: %s", settings.db_backend)
     logger.info("Queue: %s", jq_module.queue.stats()['backend'])
     logger.info("Safe mode: paper/backtest only, no real-money execution")
     yield
-    # Shutdown hooks (none needed currently)
 
 
 app = FastAPI(
     title="QuantOS API",
-    version="3.0.0",
+    version="3.1.0",
     description=(
-        "QuantOS — Personal Quant Research Paper Trading Platform. "
+        "QuantOS — Personal Quant Operating System for paper trading, "
+        "backtesting, analytics, competitions, and disciplined trader review. "
         "Paper/backtest analytics only. Not financial advice. No real-money execution."
     ),
     lifespan=lifespan,
@@ -59,7 +57,6 @@ app.add_middleware(
 )
 
 
-# ─── Request timing middleware ────────────────────────────────────────────────
 @app.middleware("http")
 async def add_process_time_header(request: Request, call_next):
     global _request_count, _error_count
@@ -84,7 +81,6 @@ async def add_process_time_header(request: Request, call_next):
     return response
 
 
-# ─── Top-level health (no auth required) ────────────────────────────────────
 @app.get("/metrics", tags=["system"], summary="Prometheus-compatible minimal metrics")
 def metrics():
     body = (
@@ -100,14 +96,14 @@ def health():
     return {
         "status": "ok",
         "product": "QuantOS",
-        "version": "3.0.0",
+        "version": "3.1.0",
         "safe_mode": True,
         "real_money_enabled": False,
+        "competitions_enabled": True,
         "disclaimer": "Paper/backtest analytics only. Not financial advice.",
     }
 
 
-# ─── Routers ──────────────────────────────────────────────────────────────────
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(strategies.router, prefix="/strategies", tags=["strategies"])
 app.include_router(jobs.router, prefix="/jobs", tags=["jobs"])
@@ -117,3 +113,4 @@ app.include_router(coach.router, prefix="/coach", tags=["quant-coach"])
 app.include_router(journal.router, prefix="/journal", tags=["journal-behavior"])
 app.include_router(system_router, prefix="/system", tags=["system"])
 app.include_router(live_paper.router, prefix="/live-paper", tags=["live-paper"])
+app.include_router(competitions.router, prefix="/competitions", tags=["competitions"])
