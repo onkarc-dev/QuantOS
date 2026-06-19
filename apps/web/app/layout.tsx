@@ -6,7 +6,7 @@ import ProfileMenu from '../components/ProfileMenu';
 
 export const metadata: Metadata = {
   title: 'QuantOS — Personal Quant Operating System',
-  description: 'Paper-trading quant research, analytics, competitions, AI coaching, and market intelligence. Not financial advice.',
+  description: 'Paper-trading quant research, analytics, competitions, Quant Coach, and market intelligence.',
 };
 
 const NAV = [
@@ -15,7 +15,7 @@ const NAV = [
   { href: '/backtests', label: 'Backtests' },
   { href: '/paper-trading', label: 'Paper Trading' },
   { href: '/analytics', label: 'Analytics' },
-  { href: '/ai-coach-v2', label: 'AI Coach' },
+  { href: '/ai-coach-v2', label: 'Quant Coach' },
   { href: '/alternative-data', label: 'Market Intel' },
   { href: '/regime-dashboard', label: 'Regime' },
   { href: '/competitions', label: 'Competitions' },
