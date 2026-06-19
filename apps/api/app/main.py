@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.db import init_db
-from app.routes import auth, strategies, jobs, reports, analytics, coach, journal, live_paper, competitions, trader_profile, market_intel
+from app.routes import auth, strategies, jobs, reports, analytics, coach, journal, live_paper, competitions, trader_profile, market_intel, market_context
 from app.routes.system import router as system_router
 from app.services.job_queue import build_queue
 import app.services.job_queue as jq_module
@@ -38,11 +38,11 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="QuantOS API",
-    version="3.2.0",
+    version="3.3.0",
     description=(
         "QuantOS — Personal Quant Operating System for paper trading, "
-        "backtesting, analytics, competitions, alternative data, regime detection, "
-        "and disciplined trader review. Paper/backtest analytics only. "
+        "backtesting, analytics, competitions, alternative data, market context, "
+        "regime detection, and disciplined trader review. Paper/backtest analytics only. "
         "Not financial advice. No real-money execution."
     ),
     lifespan=lifespan,
@@ -96,12 +96,13 @@ def health():
     return {
         "status": "ok",
         "product": "QuantOS",
-        "version": "3.2.0",
+        "version": "3.3.0",
         "safe_mode": True,
         "real_money_enabled": False,
         "competitions_enabled": True,
         "trader_profile_enabled": True,
         "market_intel_enabled": True,
+        "market_context_enabled": True,
         "disclaimer": "Paper/backtest analytics only. Not financial advice.",
     }
 
@@ -118,3 +119,4 @@ app.include_router(live_paper.router, prefix="/live-paper", tags=["live-paper"])
 app.include_router(competitions.router, prefix="/competitions", tags=["competitions"])
 app.include_router(trader_profile.router, prefix="/trader-profile", tags=["trader-profile"])
 app.include_router(market_intel.router, prefix="/market-intel", tags=["market-intel"])
+app.include_router(market_context.router, prefix="/market-context", tags=["market-context"])
