@@ -47,10 +47,9 @@ class Settings:
         otp_default = "false" if env_name in {"production", "prod"} else "true"
         self.email_otp_dev_return: bool = os.getenv("EMAIL_OTP_DEV_RETURN", otp_default).lower() in {"1", "true", "yes"}
 
-        # LLM / AI Coach. Use Gemini free tier when GEMINI_API_KEY is configured.
         self.llm_provider: str = os.getenv("LLM_PROVIDER", "gemini").lower()
         self.gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
-        self.gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
+        self.gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
         self.llm_timeout_seconds: int = int(os.getenv("LLM_TIMEOUT_SECONDS", "20"))
         self.llm_enabled: bool = os.getenv("LLM_ENABLED", "true").lower() in {"1", "true", "yes"}
 
@@ -78,17 +77,52 @@ class Settings:
         p = Path(self.outputs_root)
         return p if p.is_absolute() else self.project_root / p
 
-    @property
-    def engine_binary(self) -> Path:
-        override = os.getenv("ENGINE_BINARY_PATH", "")
+    def _first_existing_binary(self, env_name: str, names: list[str]) -> Path:
+        override = os.getenv(env_name, "")
         if override:
             return Path(override)
-        if sys.platform.startswith("win"):
-            return self.project_root / "build" / "Release" / "prism_backtest.exe"
-        fresh = self.project_root / "build_fresh" / "prism_backtest"
-        if fresh.exists():
-            return fresh
-        return self.project_root / "build" / "prism_backtest"
+        search_dirs = [
+            self.project_root / "build" / "Release",
+            self.project_root / "build" / "Debug",
+            self.project_root / "build" / "RelWithDebInfo",
+            self.project_root / "build",
+            self.project_root / "build_fresh" / "Release",
+            self.project_root / "build_fresh",
+        ]
+        for d in search_dirs:
+            for name in names:
+                p = d / name
+                if p.exists():
+                    return p
+        return search_dirs[0] / names[0]
+
+    @property
+    def engine_binary(self) -> Path:
+        return self._first_existing_binary(
+            "ENGINE_BINARY_PATH",
+            ["prism_backtest.exe", "prism_backtest"] if sys.platform.startswith("win") else ["prism_backtest", "prism_backtest.exe"],
+        )
+
+    @property
+    def live_paper_binary(self) -> Path:
+        return self._first_existing_binary(
+            "LIVE_PAPER_BINARY_PATH",
+            ["prism_live_paper_trading.exe", "prism_live_paper_trading"] if sys.platform.startswith("win") else ["prism_live_paper_trading", "prism_live_paper_trading.exe"],
+        )
+
+    @property
+    def engine_diagnostics(self) -> dict:
+        backtest = self.engine_binary
+        live = self.live_paper_binary
+        return {
+            "project_root": str(self.project_root),
+            "backtest_binary": str(backtest),
+            "backtest_exists": backtest.exists(),
+            "live_paper_binary": str(live),
+            "live_paper_exists": live.exists(),
+            "build_command": "cmake -S . -B build && cmake --build build --config Release",
+            "windows_note": "Run from C:\\Users\\Admin\\QuantOS. If Visual Studio generator is used, exe files appear under build\\Release.",
+        }
 
     def is_postgres(self) -> bool:
         return self.db_backend == "postgresql"
