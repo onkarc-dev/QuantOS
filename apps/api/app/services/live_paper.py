@@ -29,22 +29,17 @@ from app.db import get_conn, now, row_to_dict
 STARTING_BALANCE = 100000.0
 DEFAULT_SYMBOL = "BTCUSDT"
 SUPPORTED_SYMBOLS = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT","DOGEUSDT","AVAXUSDT","LINKUSDT","TRXUSDT"]
-LIVE_BINARY_REL = Path("build") / "Release" / "prism_live_paper_trading.exe"
 
 _metric_re = re.compile(r"([A-Za-z0-9_]+)=([^\s]+)")
 
 _ticker_cache = {"ts": 0.0, "prices": {}}
 
 def _fetch_market_prices() -> Dict[str, float]:
-    """Best-effort latest price snapshot for the 10 supported symbols.
-    Live paper trading itself still uses C++ WebSocket; this is only for the
-    multi-symbol monitor table. If REST is blocked, the table keeps old prices.
-    """
     now_ts = time.time()
     if now_ts - float(_ticker_cache.get("ts", 0.0)) < 10:
         return dict(_ticker_cache.get("prices", {}))
     try:
-        req = urllib.request.Request("https://api.binance.com/api/v3/ticker/price", headers={"User-Agent": "PRISMFlow/1.0"})
+        req = urllib.request.Request("https://api.binance.com/api/v3/ticker/price", headers={"User-Agent": "QuantOS/1.0"})
         with urllib.request.urlopen(req, timeout=3) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         prices = {str(x.get("symbol", "")).upper(): _float(x.get("price")) for x in data if str(x.get("symbol", "")).upper() in SUPPORTED_SYMBOLS}
@@ -79,7 +74,6 @@ def _market_table(session: Optional["LivePaperSession"] = None) -> List[Dict[str
     return rows
 
 
-
 def _float(v: Any, default: float = 0.0) -> float:
     try:
         return float(v)
@@ -101,7 +95,7 @@ def _insert_or_replace_wallet(user_id: str, session_id: str, locked_until: str =
                     realized_pnl=EXCLUDED.realized_pnl,
                     unrealized_pnl=EXCLUDED.unrealized_pnl,
                     locked_until=EXCLUDED.locked_until,
-                    updated_at=EXCLUDED.updated_at
+                    updated_at=EXCLUDED.updated_at)
                 """,
                 (user_id, session_id, STARTING_BALANCE, STARTING_BALANCE, 0.0, 0.0, locked_until, now()),
             )
@@ -125,11 +119,6 @@ def _insert_or_replace_wallet(user_id: str, session_id: str, locked_until: str =
 
 
 def _update_wallet(user_id: str, session_id: str, realized: float, unrealized: float) -> Dict[str, Any]:
-    # Accounting model:
-    #   cash_balance    = starting balance + closed/realized PnL
-    #   account_equity  = cash_balance + open/unrealized PnL
-    # The database column `current_balance` is kept for backwards compatibility,
-    # but it represents account equity, not withdrawable cash.
     cash_balance = STARTING_BALANCE + realized
     current = cash_balance + unrealized
     locked_until = ""
@@ -138,51 +127,22 @@ def _update_wallet(user_id: str, session_id: str, realized: float, unrealized: f
     with get_conn() as conn:
         args = (session_id, STARTING_BALANCE, current, realized, unrealized, locked_until, now(), user_id)
         if settings.is_postgres():
-            conn.execute(
-                """
-                UPDATE live_wallets SET session_id=%s, starting_balance=%s, current_balance=%s,
-                    realized_pnl=%s, unrealized_pnl=%s, locked_until=%s, updated_at=%s
-                WHERE user_id=%s
-                """,
-                args,
-            )
+            conn.execute("UPDATE live_wallets SET session_id=%s, starting_balance=%s, current_balance=%s, realized_pnl=%s, unrealized_pnl=%s, locked_until=%s, updated_at=%s WHERE user_id=%s", args)
         else:
-            conn.execute(
-                """
-                UPDATE live_wallets SET session_id=?, starting_balance=?, current_balance=?,
-                    realized_pnl=?, unrealized_pnl=?, locked_until=?, updated_at=?
-                WHERE user_id=?
-                """,
-                args,
-            )
+            conn.execute("UPDATE live_wallets SET session_id=?, starting_balance=?, current_balance=?, realized_pnl=?, unrealized_pnl=?, locked_until=?, updated_at=? WHERE user_id=?", args)
         conn.commit()
-    return {
-        "user_id": user_id,
-        "session_id": session_id,
-        "starting_balance": STARTING_BALANCE,
-        "current_balance": round(current, 6),
-        "account_equity": round(current, 6),
-        "cash_balance": round(cash_balance, 6),
-        "realized_pnl": round(realized, 6),
-        "unrealized_pnl": round(unrealized, 6),
-        "locked_until": locked_until,
-    }
+    return {"user_id": user_id, "session_id": session_id, "starting_balance": STARTING_BALANCE, "current_balance": round(current, 6), "account_equity": round(current, 6), "cash_balance": round(cash_balance, 6), "realized_pnl": round(realized, 6), "unrealized_pnl": round(unrealized, 6), "locked_until": locked_until}
 
 
 def _save_trade_event(user_id: str, session_id: str, event: Dict[str, Any]) -> None:
     with get_conn() as conn:
         trade_id = str(uuid.uuid4())
         payload = json.dumps(event)
+        args = (trade_id, session_id, user_id, str(event.get("symbol") or DEFAULT_SYMBOL).upper(), event.get("event_type", "EVENT"), _float(event.get("price")), _float(event.get("qty")), _float(event.get("pnl")), payload, now())
         if settings.is_postgres():
-            conn.execute(
-                "INSERT INTO live_trades(id, session_id, user_id, symbol, event_type, price, qty, pnl, trade_json, created_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                (trade_id, session_id, user_id, str(event.get("symbol") or DEFAULT_SYMBOL).upper(), event.get("event_type", "EVENT"), _float(event.get("price")), _float(event.get("qty")), _float(event.get("pnl")), payload, now()),
-            )
+            conn.execute("INSERT INTO live_trades(id, session_id, user_id, symbol, event_type, price, qty, pnl, trade_json, created_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", args)
         else:
-            conn.execute(
-                "INSERT INTO live_trades(id, session_id, user_id, symbol, event_type, price, qty, pnl, trade_json, created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (trade_id, session_id, user_id, str(event.get("symbol") or DEFAULT_SYMBOL).upper(), event.get("event_type", "EVENT"), _float(event.get("price")), _float(event.get("qty")), _float(event.get("pnl")), payload, now()),
-            )
+            conn.execute("INSERT INTO live_trades(id, session_id, user_id, symbol, event_type, price, qty, pnl, trade_json, created_at) VALUES(?,?,?,?,?,?,?,?,?,?)", args)
         conn.commit()
 
 
@@ -196,9 +156,7 @@ def _read_dashboard_snapshot() -> Dict[str, Any]:
         return {}
 
 
-
 def _next_session_number(user_id: str) -> int:
-    """Return a stable per-user live session serial: 0, 1, 2..."""
     counter_dir = settings.project_root / "outputs" / user_id
     counter_dir.mkdir(parents=True, exist_ok=True)
     counter_file = counter_dir / "live_session_counter.txt"
@@ -211,35 +169,17 @@ def _next_session_number(user_id: str) -> int:
 
 
 def _latest_strategy_for_user(user_id: str) -> Dict[str, Any]:
-    """Return the newest saved Strategy Builder config for this user, if any."""
     with get_conn() as conn:
-        if settings.is_postgres():
-            row = conn.execute(
-                "SELECT * FROM strategies WHERE user_id=%s ORDER BY created_at DESC LIMIT 1",
-                (user_id,),
-            ).fetchone()
-        else:
-            row = conn.execute(
-                "SELECT * FROM strategies WHERE user_id=? ORDER BY created_at DESC LIMIT 1",
-                (user_id,),
-            ).fetchone()
+        q = "SELECT * FROM strategies WHERE user_id=%s ORDER BY created_at DESC LIMIT 1" if settings.is_postgres() else "SELECT * FROM strategies WHERE user_id=? ORDER BY created_at DESC LIMIT 1"
+        row = conn.execute(q, (user_id,)).fetchone()
     return row_to_dict(row) if row else {}
 
 
 def _strategy_for_user(user_id: str, strategy_id: str = "") -> Dict[str, Any]:
-    """Fetch the requested saved strategy, or fall back to the newest one."""
     if strategy_id:
         with get_conn() as conn:
-            if settings.is_postgres():
-                row = conn.execute(
-                    "SELECT * FROM strategies WHERE id=%s AND user_id=%s",
-                    (strategy_id, user_id),
-                ).fetchone()
-            else:
-                row = conn.execute(
-                    "SELECT * FROM strategies WHERE id=? AND user_id=?",
-                    (strategy_id, user_id),
-                ).fetchone()
+            q = "SELECT * FROM strategies WHERE id=%s AND user_id=%s" if settings.is_postgres() else "SELECT * FROM strategies WHERE id=? AND user_id=?"
+            row = conn.execute(q, (strategy_id, user_id)).fetchone()
         if row:
             return row_to_dict(row)
     return _latest_strategy_for_user(user_id)
@@ -261,15 +201,7 @@ def _safe_strategy_payload(row: Dict[str, Any]) -> Dict[str, Any]:
     if not symbols:
         symbols = cfg.get("symbols") or [DEFAULT_SYMBOL]
     strategy = cfg.get("strategy") if isinstance(cfg.get("strategy"), dict) else cfg
-    return {
-        "strategy_id": cfg.get("user_strategy_id") or cfg.get("strategy_id") or row.get("id") or "default_cpp_config",
-        "strategy_db_id": row.get("id") or "",
-        "name": row.get("name") or cfg.get("name") or strategy.get("name") or "QuantOS Breakout Retest",
-        "symbols": [str(x).upper() for x in symbols] if symbols else [DEFAULT_SYMBOL],
-        "timeframe": row.get("timeframe") or cfg.get("timeframe") or "1m",
-        "bar_seconds": int(cfg.get("bar_seconds") or 10),
-        "strategy": strategy,
-    }
+    return {"strategy_id": cfg.get("user_strategy_id") or cfg.get("strategy_id") or row.get("id") or "default_cpp_config", "strategy_db_id": row.get("id") or "", "name": row.get("name") or cfg.get("name") or strategy.get("name") or "QuantOS Breakout Retest", "symbols": [str(x).upper() for x in symbols] if symbols else [DEFAULT_SYMBOL], "timeframe": row.get("timeframe") or cfg.get("timeframe") or "1m", "bar_seconds": int(cfg.get("bar_seconds") or 10), "strategy": strategy}
 
 
 def _clean_symbols(symbols: Any) -> List[str]:
@@ -284,12 +216,6 @@ def _clean_symbols(symbols: Any) -> List[str]:
 
 
 def _write_live_strategy_config(user_id: str, session_id: str, strategy_id: str = "", symbols_override: Optional[List[str]] = None) -> Dict[str, Any]:
-    """Write the active Strategy Builder parameters to files consumed by C++ binaries.
-
-    The C++ executable is single-symbol, so multi-symbol live paper starts one
-    C++ process per selected symbol, each receiving the same strategy rules but
-    a one-symbol config file.
-    """
     row = _strategy_for_user(user_id, strategy_id)
     payload = _safe_strategy_payload(row)
     if not payload:
@@ -318,11 +244,6 @@ def _write_live_strategy_config(user_id: str, session_id: str, strategy_id: str 
 
 
 def _aggregate_session_metrics(session: "LivePaperSession") -> Dict[str, Any]:
-    """Build one atomic dashboard snapshot from per-symbol C++ states.
-
-    Live price/unrealized PnL can move every tick. Closed-trade metrics must be
-    recomputed together so UI cards do not flicker independently.
-    """
     states = list(session.symbol_states.values())
     total_trades = sum(int(_float(st.get("total_trades"))) for st in states)
     wins = sum(int(_float(st.get("wins"))) for st in states)
@@ -344,9 +265,6 @@ def _aggregate_session_metrics(session: "LivePaperSession") -> Dict[str, Any]:
                 setup_candidates.append(val)
                 break
     current_setup_score = max(setup_candidates) if setup_candidates else 0.0
-
-    # Last result should be a closed-trade label, not a continuously changing
-    # partial metric. Prefer the newest sell-fill event; fall back to C++ state.
     last_result = "NONE"
     for ev in reversed(session.events):
         if str(ev.get("event_type")) == "PAPER_SELL_FILL":
@@ -360,26 +278,7 @@ def _aggregate_session_metrics(session: "LivePaperSession") -> Dict[str, Any]:
                 break
         if last_result == "NONE" and open_trades:
             last_result = "OPEN"
-
-    return {
-        "snapshot_ts": now(),
-        "processed": processed,
-        "bars": bars,
-        "signals": signals,
-        "total_trades": total_trades,
-        "wins": wins,
-        "losses": losses,
-        "breakevens": breakevens,
-        "gross_R": round(gross_r, 6),
-        "avg_R": round(avg_r, 6),
-        "last_result": last_result,
-        "open_trade": open_trades,
-        "open_positions": open_trades,
-        "p95_engine_us": round(max(p95_values), 3) if p95_values else 0,
-        "p99_engine_us": round(max(p99_values), 3) if p99_values else 0,
-        "current_setup_score": round(current_setup_score, 3),
-        "setup_score": round(current_setup_score, 3),
-    }
+    return {"snapshot_ts": now(), "processed": processed, "bars": bars, "signals": signals, "total_trades": total_trades, "wins": wins, "losses": losses, "breakevens": breakevens, "gross_R": round(gross_r, 6), "avg_R": round(avg_r, 6), "last_result": last_result, "open_trade": open_trades, "open_positions": open_trades, "p95_engine_us": round(max(p95_values), 3) if p95_values else 0, "p99_engine_us": round(max(p99_values), 3) if p99_values else 0, "current_setup_score": round(current_setup_score, 3), "setup_score": round(current_setup_score, 3)}
 
 def _copy_final_reports(session_id: str) -> Dict[str, str]:
     out = settings.project_root / "outputs" / "prismflow_cpp_heavy"
@@ -388,7 +287,6 @@ def _copy_final_reports(session_id: str) -> Dict[str, str]:
     summary_path = out / "live_session_summary.json"
     snapshot_path = out / "live_dashboard_snapshot.json"
     trade_log_path = out / "live_trade_log.csv"
-
     existing_summary = out / "live_paper_summary.json"
     if existing_summary.exists():
         try:
@@ -400,7 +298,6 @@ def _copy_final_reports(session_id: str) -> Dict[str, str]:
     data.update({"session_id": session_id, "mode": "live-paper", "symbol": (dashboard.get("symbol") or DEFAULT_SYMBOL), "synthetic_data_used": False})
     summary_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     snapshot_path.write_text(json.dumps(dashboard, indent=2), encoding="utf-8")
-
     trades = dashboard.get("trade_history") or dashboard.get("trades") or []
     with trade_log_path.open("w", newline="", encoding="utf-8") as f:
         fields = ["id", "time", "symbol", "side", "qty", "entry", "exit", "stop", "target1", "target2", "result", "r", "pnl", "reason"]
@@ -408,12 +305,7 @@ def _copy_final_reports(session_id: str) -> Dict[str, str]:
         writer.writeheader()
         for tr in trades if isinstance(trades, list) else []:
             writer.writerow({k: tr.get(k, "") for k in fields})
-
-    return {
-        "live_trade_log.csv": str(trade_log_path),
-        "live_session_summary.json": str(summary_path),
-        "live_dashboard_snapshot.json": str(snapshot_path),
-    }
+    return {"live_trade_log.csv": str(trade_log_path), "live_session_summary.json": str(summary_path), "live_dashboard_snapshot.json": str(snapshot_path)}
 
 
 @dataclass
@@ -446,27 +338,11 @@ class LivePaperSession:
 
 class LivePaperManager:
     def __init__(self) -> None:
-        # RLock is required because start() can return status() while it still
-        # owns the session lock. A normal Lock deadlocked POST /live-paper/start:
-        # the browser sent the CORS OPTIONS request, but the real POST never
-        # completed, leaving the UI stuck on "Loading session...".
         self._lock = threading.RLock()
         self._sessions: Dict[str, LivePaperSession] = {}
 
     def _binary_path(self) -> Path:
-        override = os.getenv("LIVE_PAPER_BINARY_PATH", "")
-        if override:
-            return Path(override)
-        if os.name == "nt":
-            return settings.project_root / LIVE_BINARY_REL
-        # Linux/macOS/Docker build output
-        preferred = settings.project_root / "build" / "prism_live_paper_trading"
-        if preferred.exists():
-            return preferred
-        release = settings.project_root / "build" / "Release" / "prism_live_paper_trading"
-        if release.exists():
-            return release
-        return preferred
+        return settings.live_paper_binary
 
     def _is_locked(self, user_id: str) -> str:
         with get_conn() as conn:
@@ -498,21 +374,14 @@ class LivePaperManager:
             _insert_or_replace_wallet(user_id, session.session_id)
             if not binary.exists():
                 session.status = "disabled"
-                session.error = f"Live paper binary not found: {binary}. Synthetic fallback is disabled. Build C++ target first."
+                d = settings.engine_diagnostics
+                session.error = f"Live paper engine missing. Expected: {binary}. Build command: {d.get('build_command')}"
                 _copy_final_reports(session.session_id)
                 return self.status(user_id)
             try:
                 for sym, cfg_path in (live_config.get("config_paths") or {}).items():
                     cmd = [str(binary), "--managed-run", "--config", str(cfg_path), "--snapshot-ms", "1000"]
-                    proc = subprocess.Popen(
-                        cmd,
-                        cwd=str(settings.project_root),
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        text=True,
-                        bufsize=1,
-                        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
-                    )
+                    proc = subprocess.Popen(cmd, cwd=str(settings.project_root), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0)
                     session.processes[sym] = proc
                     if session.process is None:
                         session.process = proc
@@ -545,8 +414,6 @@ class LivePaperManager:
                     session.processed = sum(int(_float(st.get("processed"))) for st in session.symbol_states.values())
                     session.realized_pnl = sum(_float(st.get("realized_pnl")) for st in session.symbol_states.values())
                     session.unrealized_pnl = sum(_float(st.get("unrealized_pnl")) for st in session.symbol_states.values())
-                    # Keep the latest C++ engine counters so the SaaS UI can show
-                    # wins/losses/R/latency instead of a static synthetic-data card.
                     typed_metrics: Dict[str, Any] = {}
                     for key, value in metrics.items():
                         try:
@@ -556,12 +423,7 @@ class LivePaperManager:
                             typed_metrics[key] = value
                     session.symbol_states.setdefault(symbol, {}).update(typed_metrics)
                     session.symbol_states[symbol]["last_price"] = session.last_price
-                    # Build one atomic aggregate snapshot from all symbol states.
-                    # This prevents dashboard cards (Gross R, Avg R, W/L/BE, Last Result)
-                    # from displaying mixed values during polling.
                     aggregate = _aggregate_session_metrics(session)
-                    # Keep cfg_* values and latest per-symbol C++ diagnostics, then overlay
-                    # the authoritative closed-trade aggregate metrics.
                     cfg_metrics = {k: v for k, v in session.metrics.items() if str(k).startswith("cfg_")}
                     cfg_metrics.update({k: v for k, v in typed_metrics.items() if str(k).startswith("cfg_")})
                     session.metrics = {**typed_metrics, **cfg_metrics, **aggregate}
@@ -586,7 +448,6 @@ class LivePaperManager:
         rc = process.poll()
         with self._lock:
             if symbol in session.processes:
-                # Keep finished process in the dict for final metrics, but mark state.
                 session.symbol_states.setdefault(symbol, {})["process_rc"] = rc
             if session.status == "running" and all(p.poll() is not None for p in session.processes.values()):
                 session.status = "stopped" if all((p.poll() or 0) == 0 for p in session.processes.values()) else "failed"
@@ -608,83 +469,35 @@ class LivePaperManager:
                 pass
 
     def _terminate(self, session: LivePaperSession) -> None:
-        for p in list(session.processes.values()) or ([session.process] if session.process else []):
+        for p in session.processes.values():
             self._terminate_process(p)
+        if session.process and not session.processes:
+            self._terminate_process(session.process)
+        session.report_files = _copy_final_reports(session.session_id)
 
     def stop(self, user_id: str) -> Dict[str, Any]:
         with self._lock:
-            session = self._sessions.get(user_id)
-            if not session:
-                return {"status": "idle", "message": "No live paper session is running."}
-            session.status = "stopping"
-            self._terminate(session)
-        # Give C++ process a moment to handle SIGTERM and write final files.
-        deadline = time.time() + 5
-        while any(p.poll() is None for p in session.processes.values()) and time.time() < deadline:
-            time.sleep(0.1)
-        for p in session.processes.values():
-            if p.poll() is None:
-                p.kill()
-        session.stopped_at = now()
-        session.status = "stopped"
-        session.report_files = _copy_final_reports(session.session_id)
-        return self.status(user_id)
+            s = self._sessions.get(user_id)
+            if not s:
+                return {"status": "idle"}
+            self._terminate(s)
+            s.status = "stopped"
+            s.stopped_at = now()
+            return self.status(user_id)
 
     def status(self, user_id: str) -> Dict[str, Any]:
         with self._lock:
-            session = self._sessions.get(user_id)
-            if not session:
-                wallet = get_wallet(user_id)
-                return {"status": "idle", "symbol": DEFAULT_SYMBOL, "synthetic_data_used": False, "wallet": wallet, "markets": _market_table(None), "supported_symbols": SUPPORTED_SYMBOLS}
-            snapshot = _read_dashboard_snapshot()
-            open_position = snapshot.get("open_position") or snapshot.get("open_trade") or snapshot.get("trade_state", {}).get("open_trade")
-            return {
-                "status": session.status,
-                "session_id": session.session_id,
-                "session_number": session.session_number,
-                "selected_strategy_id": session.selected_strategy_id,
-                "selected_strategy_db_id": session.selected_strategy_db_id,
-                "selected_strategy_name": session.selected_strategy_name,
-                "config_path": session.config_path,
-                "live_config": session.live_config,
-                "symbol": "MULTI" if len(session.live_config.get("symbols") or []) > 1 else ((session.live_config.get("symbols") or [DEFAULT_SYMBOL])[0]),
-                "mode": "live-paper",
-                "real_time": True if session.status == "running" else False,
-                "synthetic_data_used": False,
-                "last_price": session.last_price,
-                "processed": session.processed,
-                "metrics": session.metrics,
-                "session_metrics": session.session_metrics or session.metrics,
-                "symbol_states": session.symbol_states,
-                "realized_pnl": round(session.realized_pnl, 6),
-                "unrealized_pnl": round(session.unrealized_pnl, 6),
-                "open_position": open_position,
-                "events": session.events[-50:],
-                "stdout_tail": session.stdout_tail[-20:],
-                "error": session.error,
-                "started_at": session.started_at,
-                "stopped_at": session.stopped_at,
-                "report_files": session.report_files,
-                "wallet": get_wallet(user_id),
-                "markets": _market_table(session),
-                "supported_symbols": SUPPORTED_SYMBOLS,
-            }
+            s = self._sessions.get(user_id)
+            if not s:
+                return {"status": "idle", "wallet": get_wallet(user_id), "supported_markets": _market_table(None), "engine": settings.engine_diagnostics}
+            wallet = get_wallet(user_id)
+            aggregate = _aggregate_session_metrics(s) if s.symbol_states else dict(s.session_metrics or {})
+            return {"status": s.status, "session_id": s.session_id, "session_number": s.session_number, "started_at": s.started_at, "stopped_at": s.stopped_at, "last_price": s.last_price, "processed": s.processed, "realized_pnl": s.realized_pnl, "unrealized_pnl": s.unrealized_pnl, "metrics": {**s.metrics, **aggregate}, "session_metrics": aggregate, "stdout_tail": s.stdout_tail[-20:], "events": s.events[-50:], "trades": s.events[-50:], "report_files": s.report_files, "error": s.error, "wallet": wallet, "selected_strategy_id": s.selected_strategy_id, "selected_strategy_name": s.selected_strategy_name, "selected_strategy_db_id": s.selected_strategy_db_id, "config_path": s.config_path, "live_config": s.live_config, "symbol_states": s.symbol_states, "supported_markets": _market_table(s), "engine": settings.engine_diagnostics}
 
     def trades(self, user_id: str) -> Dict[str, Any]:
-        with get_conn() as conn:
-            if settings.is_postgres():
-                rows = conn.execute("SELECT * FROM live_trades WHERE user_id=%s ORDER BY created_at DESC LIMIT 200", (user_id,)).fetchall()
-            else:
-                rows = conn.execute("SELECT * FROM live_trades WHERE user_id=? ORDER BY created_at DESC LIMIT 200", (user_id,)).fetchall()
-        out = []
-        for r in rows:
-            d = row_to_dict(r)
-            try:
-                d["trade"] = json.loads(d.get("trade_json") or "{}")
-            except Exception:
-                d["trade"] = {}
-            out.append(d)
-        return {"symbol": "MULTI", "trades": out}
+        with self._lock:
+            s = self._sessions.get(user_id)
+            return {"trades": (s.events if s else [])}
 
 
 def get_wallet(user_id: str) -> Dict[str, Any]:
@@ -692,45 +505,18 @@ def get_wallet(user_id: str) -> Dict[str, Any]:
         q = "SELECT * FROM live_wallets WHERE user_id=%s" if settings.is_postgres() else "SELECT * FROM live_wallets WHERE user_id=?"
         row = conn.execute(q, (user_id,)).fetchone()
     if not row:
-        return {
-            "user_id": user_id,
-            "session_id": "",
-            "starting_balance": STARTING_BALANCE,
-            "current_balance": STARTING_BALANCE,
-            "account_equity": STARTING_BALANCE,
-            "cash_balance": STARTING_BALANCE,
-            "realized_pnl": 0.0,
-            "unrealized_pnl": 0.0,
-            "locked_until": "",
-        }
-    d = row_to_dict(row)
-    starting = _float(d.get("starting_balance"), STARTING_BALANCE)
-    realized = _float(d.get("realized_pnl"))
-    unrealized = _float(d.get("unrealized_pnl"))
-    account_equity = _float(d.get("current_balance"), starting + realized + unrealized)
-    cash_balance = starting + realized
-    return {
-        "user_id": d.get("user_id"),
-        "session_id": d.get("session_id") or "",
-        "starting_balance": starting,
-        # Backwards-compatible field: current_balance means account equity.
-        "current_balance": account_equity,
-        "account_equity": account_equity,
-        "cash_balance": cash_balance,
-        "realized_pnl": realized,
-        "unrealized_pnl": unrealized,
-        "locked_until": d.get("locked_until") or "",
-        "updated_at": d.get("updated_at") or "",
-    }
+        return {"user_id": user_id, "starting_balance": STARTING_BALANCE, "current_balance": STARTING_BALANCE, "account_equity": STARTING_BALANCE, "cash_balance": STARTING_BALANCE, "realized_pnl": 0.0, "unrealized_pnl": 0.0, "locked_until": ""}
+    return row_to_dict(row)
+
+
+def replay_csv_paper_session(path: Path, max_rows: int = 250) -> Dict[str, Any]:
+    rows = []
+    with path.open(newline="", encoding="utf-8", errors="replace") as f:
+        for i, row in enumerate(csv.DictReader(f)):
+            if i >= max_rows:
+                break
+            rows.append(row)
+    return {"rows": len(rows), "sample": rows[:5], "source": str(path)}
 
 
 manager = LivePaperManager()
-
-# Keep old replay function only for explicit /replay diagnostics. It is not used by live mode.
-def replay_csv_paper_session(csv_path: Path, max_rows: int = 250) -> Dict[str, Any]:
-    return {
-        "status": "disabled_for_live_mode",
-        "message": "CSV replay is disabled for Phase 2 live paper trading. Use /live-paper/start for real Binance WebSocket mode.",
-        "input_data": str(csv_path),
-        "synthetic_data_used": False,
-    }
