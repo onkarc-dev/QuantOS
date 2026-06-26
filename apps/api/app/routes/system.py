@@ -1,9 +1,7 @@
-"""System health, readiness, and onboarding routes."""
+"""System health, readiness, engine diagnostics, and onboarding routes."""
 from __future__ import annotations
 
-import datetime
-import sqlite3
-from pathlib import Path
+import json
 from fastapi import APIRouter, Depends
 
 from app.services.production_readiness import readiness_check
@@ -16,11 +14,10 @@ router = APIRouter()
 
 @router.get("/health", summary="Basic health check — always returns 200 if API is up")
 def health():
-    """Liveness probe: returns 200 immediately if the process is running."""
     return {
         "status": "ok",
         "product": "QuantOS",
-        "version": "3.0.0",
+        "version": "3.4.0",
         "timestamp": now(),
         "safe_mode": True,
         "real_money_enabled": False,
@@ -29,14 +26,30 @@ def health():
     }
 
 
+@router.get("/engine-diagnostics", summary="C++ engine discovery and build diagnostics")
+def engine_diagnostics():
+    """Shows exactly where QuantOS is looking for C++ binaries."""
+    d = dict(settings.engine_diagnostics)
+    d["backtest_status"] = "FOUND" if d.get("backtest_exists") else "MISSING"
+    d["live_paper_status"] = "FOUND" if d.get("live_paper_exists") else "MISSING"
+    d["ready_for_backtests"] = bool(d.get("backtest_exists"))
+    d["ready_for_live_paper"] = bool(d.get("live_paper_exists"))
+    d["notes"] = [
+        "Backtests require prism_backtest executable.",
+        "Live paper requires prism_live_paper_trading executable.",
+        "On Windows, live paper target is skipped if libwebsockets is not installed through vcpkg.",
+    ]
+    return d
+
+
 @router.get("/readiness", summary="Readiness probe — checks DB, engine binary, queue")
 def readiness():
-    """Readiness probe: checks whether the service can actually serve requests."""
     issues = []
     db_ok = False
-    engine_ok = settings.engine_binary.exists()
+    engine_diag = settings.engine_diagnostics
+    engine_ok = bool(engine_diag.get("backtest_exists"))
+    live_ok = bool(engine_diag.get("live_paper_exists"))
 
-    # Check DB
     try:
         with get_conn() as conn:
             conn.execute("SELECT 1").fetchone()
@@ -45,16 +58,19 @@ def readiness():
         issues.append(f"db_error: {e}")
 
     if not engine_ok:
-        issues.append("engine_binary_missing: build C++ first (cmake)")
+        issues.append("backtest_engine_missing: build prism_backtest first")
+    if not live_ok:
+        issues.append("live_paper_engine_missing: build prism_live_paper_trading first")
 
-    ready = db_ok  # Minimum: DB must be up. Engine optional (demo mode works without it)
     return {
-        "ready": ready,
+        "ready": db_ok,
         "timestamp": now(),
         "db": "ok" if db_ok else "error",
         "db_backend": settings.db_backend,
-        "engine_binary": "ok" if engine_ok else "missing (demo mode available)",
+        "backtest_engine": "ok" if engine_ok else "missing",
+        "live_paper_engine": "ok" if live_ok else "missing",
         "redis": "configured" if settings.has_redis() else "not_configured (using threaded fallback)",
+        "engine": engine_diag,
         "issues": issues,
     }
 
@@ -78,7 +94,6 @@ def get_onboarding(user=Depends(current_user)):
             "completed_steps": [],
             "is_complete": False,
         }
-    import json
     d = row_to_dict(row)
     return {
         "user_id": user["id"],
@@ -90,16 +105,11 @@ def get_onboarding(user=Depends(current_user)):
 
 @router.post("/onboarding/{step}", summary="Advance onboarding to next step")
 def advance_onboarding(step: str, user=Depends(current_user)):
-    """
-    Onboarding steps in order:
-    welcome → create_strategy → run_backtest → view_coach_report → journal_trade → complete
-    """
     STEPS = ["welcome", "create_strategy", "run_backtest", "view_coach_report", "journal_trade", "complete"]
     if step not in STEPS:
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail=f"Invalid step. Valid: {STEPS}")
 
-    import json
     p = "?" if not settings.is_postgres() else "%s"
     with get_conn() as conn:
         row = conn.execute(
