@@ -9,6 +9,21 @@ from app.services.live_paper import manager, get_wallet, replay_csv_paper_sessio
 router = APIRouter()
 
 
+def _with_market_alias(payload: dict) -> dict:
+    """Keep frontend/backward compatibility stable.
+
+    Older UI code reads `markets`; newer manager code returns `supported_markets`.
+    Returning both prevents the 10-market monitor from showing an endless waiting
+    row when the backend is actually healthy.
+    """
+    payload = dict(payload or {})
+    supported = payload.get('supported_markets') or payload.get('markets') or []
+    payload['supported_markets'] = supported
+    payload['markets'] = supported
+    payload['engine'] = payload.get('engine') or settings.engine_diagnostics
+    return payload
+
+
 @router.post('/start')
 def start_live_paper(payload: dict = Body(default={}), user=Depends(current_user)):
     payload = payload or {}
@@ -16,17 +31,17 @@ def start_live_paper(payload: dict = Body(default={}), user=Depends(current_user
     symbols = payload.get('symbols') or []
     if isinstance(symbols, str):
         symbols = [symbols]
-    return manager.start(str(user['id']), strategy_id=strategy_id, symbols=symbols)
+    return _with_market_alias(manager.start(str(user['id']), strategy_id=strategy_id, symbols=symbols))
 
 
 @router.post('/stop')
 def stop_live_paper(user=Depends(current_user)):
-    return manager.stop(str(user['id']))
+    return _with_market_alias(manager.stop(str(user['id'])))
 
 
 @router.get('/status')
 def status_live_paper(user=Depends(current_user)):
-    return manager.status(str(user['id']))
+    return _with_market_alias(manager.status(str(user['id'])))
 
 
 @router.get('/trades')
