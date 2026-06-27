@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 project(PRISMFlowLowLatencyEngine LANGUAGES CXX)
 
+enable_testing()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -19,6 +21,8 @@ target_include_directories(l3_order_book_tests PRIVATE
     cpp_engine/src
 )
 
+add_test(NAME l3_order_book_tests COMMAND l3_order_book_tests)
+
 add_executable(matching_engine_tests
     tests/matching_engine_tests.cpp
 )
@@ -26,6 +30,18 @@ add_executable(matching_engine_tests
 target_include_directories(matching_engine_tests PRIVATE
     cpp_engine/src
 )
+
+add_test(NAME matching_engine_tests COMMAND matching_engine_tests)
+
+add_executable(paper_broker_tests
+    tests/paper_broker_tests.cpp
+)
+
+target_include_directories(paper_broker_tests PRIVATE
+    cpp_engine/src
+)
+
+add_test(NAME paper_broker_tests COMMAND paper_broker_tests)
 
 add_executable(benchmark_engine
     cpp_engine/benchmarks/benchmark_engine.cpp
