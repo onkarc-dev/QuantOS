@@ -162,25 +162,56 @@ class RQJobQueue:
         self._RQJob = _RQJob
 
     def enqueue(self, kind: str, payload: Dict[str, Any]) -> QueueJob:
-        # For RQ, we enqueue a dummy record and let external worker pick it up.
-        # Jobs are tracked by RQ's own job IDs.
-        job_id = str(uuid4())
-        # Store metadata in Redis hash
-        self._redis.hset(
-            f"prismflow:job:{job_id}",
-            mapping={"kind": kind, "status": "queued", "created_at": _now()}
+        if kind != "backtest":
+            raise ValueError(f"Unsupported RQ job kind: {kind}")
+
+        rq_job = self._rq.enqueue(
+            "app.services.engine_runner.run_engine_sync",
+            dict(payload),
+            job_timeout=240,
+            result_ttl=86400,
+            failure_ttl=86400,
         )
-        return QueueJob(id=job_id, kind=kind, payload=payload)
+        return QueueJob(
+            id=rq_job.id,
+            kind=kind,
+            payload=dict(payload),
+            status=JobStatus.queued,
+            created_at=_now(),
+            meta={"rq_job_id": rq_job.id},
+        )
 
     def get(self, job_id: str) -> Optional[QueueJob]:
-        data = self._redis.hgetall(f"prismflow:job:{job_id}")
-        if not data:
+        try:
+            rq_job = self._RQJob.fetch(job_id, connection=self._redis)
+        except Exception:
             return None
+
+        status_raw = rq_job.get_status(refresh=True)
+        status = {
+            "queued": JobStatus.queued,
+            "started": JobStatus.running,
+            "deferred": JobStatus.queued,
+            "scheduled": JobStatus.queued,
+            "finished": JobStatus.completed,
+            "failed": JobStatus.failed,
+            "canceled": JobStatus.cancelled,
+            "cancelled": JobStatus.cancelled,
+            "stopped": JobStatus.failed,
+        }.get(str(status_raw), JobStatus.queued)
+
         return QueueJob(
-            id=job_id,
-            kind=data.get(b"kind", b"").decode(),
+            id=rq_job.id,
+            kind=(rq_job.meta or {}).get("kind", "backtest"),
             payload={},
-            status=JobStatus(data.get(b"status", b"queued").decode()),
+            status=status,
+            result=rq_job.result if isinstance(rq_job.result, dict) else None,
+            error=str(rq_job.exc_info or ""),
+            created_at=str(rq_job.created_at or ""),
+            started_at=str(rq_job.started_at or ""),
+            completed_at=str(rq_job.ended_at or ""),
+            progress_pct=100 if status in {JobStatus.completed, JobStatus.failed, JobStatus.cancelled} else 0,
+            meta={"rq_status": str(status_raw)},
         )
 
     def stats(self) -> Dict[str, Any]:
