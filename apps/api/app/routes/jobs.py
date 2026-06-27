@@ -27,7 +27,9 @@ class BacktestPayload(BaseModel):
 @router.post("/submit-backtest", summary="Submit a backtest job (async)")
 def submit_backtest(payload: BacktestPayload, user=Depends(current_user)):
     """Queue a backtest job. Returns immediately with job ID. Use /jobs/{id} to poll."""
+    job_id = str(uuid.uuid4())
     job_payload = {
+        "job_id": job_id,
         "user_id": user["id"],
         "strategy_id": payload.strategy_id,
         "mode": "backtest",
@@ -56,7 +58,8 @@ def submit_backtest(payload: BacktestPayload, user=Depends(current_user)):
         }
 
     return {
-        "job_id": q_job.id,
+        "job_id": job_id,
+        "queue_id": q_job.id,
         "status": "queued",
         "message": "Backtest job submitted. Poll /jobs/{id} for status.",
     }
