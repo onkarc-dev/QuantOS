@@ -30,7 +30,7 @@ void assert_basic_jsonl_event_shape(const std::string& line) {
     assert(line.back() == '}');
     assert(contains(line, "\"ts_ns\":"));
     assert(contains(line, "\"type\":"));
-    assert(contains(line, "\"payload\":{");
+    assert(contains(line, "\"payload\":{") );
 }
 
 void test_eventstore_writes_valid_jsonl_shapes_and_lifecycle_events() {
