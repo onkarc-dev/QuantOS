@@ -2,7 +2,6 @@
 
 #include "../engine_shared.hpp"
 #include "../order_book.hpp"
-#include "../time_utils.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -37,35 +36,54 @@ inline void lower_symbol(char* s) {
     for (; *s; ++s) *s = static_cast<char>(std::tolower(static_cast<unsigned char>(*s)));
 }
 
+inline std::size_t matching_array_end(const std::string& view, std::size_t array_open) {
+    int depth = 0;
+    bool in_string = false;
+    bool escaped = false;
+    for (std::size_t i = array_open; i < view.size(); ++i) {
+        const char c = view[i];
+        if (escaped) { escaped = false; continue; }
+        if (c == '\\') { escaped = in_string; continue; }
+        if (c == '"') { in_string = !in_string; continue; }
+        if (in_string) continue;
+        if (c == '[') ++depth;
+        else if (c == ']') {
+            --depth;
+            if (depth == 0) return i;
+        }
+    }
+    return std::string::npos;
+}
+
 inline std::size_t parse_side(const std::string& view,
                               const char* key,
                               std::array<PriceLevelUpdate, L2Update::kMaxLevelsPerMessage>& out) {
-    const std::string pattern = std::string("\"") + key + "\":[";
-    auto pos = view.find(pattern);
-    if (pos == std::string::npos) return 0;
-    pos += pattern.size();
+    const std::string pattern = std::string("\"") + key + "\":";
+    auto key_pos = view.find(pattern);
+    if (key_pos == std::string::npos) return 0;
+    auto outer_open = view.find('[', key_pos + pattern.size());
+    if (outer_open == std::string::npos) return 0;
+    const auto outer_close = matching_array_end(view, outer_open);
+    if (outer_close == std::string::npos || outer_close <= outer_open) return 0;
 
     std::size_t count = 0;
-    while (count < out.size()) {
-        const auto open = view.find("[\"", pos);
-        if (open == std::string::npos) break;
-        const auto price_start = open + 2;
-        const auto price_end = view.find('"', price_start);
-        if (price_end == std::string::npos) break;
-        const auto qty_marker = view.find("\",\"", price_end);
-        if (qty_marker == std::string::npos) break;
-        const auto qty_start = qty_marker + 3;
-        const auto qty_end = view.find('"', qty_start);
-        if (qty_end == std::string::npos) break;
+    std::size_t pos = outer_open + 1;
+    while (pos < outer_close && count < out.size()) {
+        const auto level_open = view.find('[', pos);
+        if (level_open == std::string::npos || level_open >= outer_close) break;
+        const auto price_quote = view.find('"', level_open);
+        if (price_quote == std::string::npos || price_quote >= outer_close) break;
+        const auto price_end = view.find('"', price_quote + 1);
+        if (price_end == std::string::npos || price_end >= outer_close) break;
+        const auto qty_quote = view.find('"', price_end + 1);
+        if (qty_quote == std::string::npos || qty_quote >= outer_close) break;
+        const auto qty_end = view.find('"', qty_quote + 1);
+        if (qty_end == std::string::npos || qty_end >= outer_close) break;
 
-        out[count].price = std::strtod(view.c_str() + price_start, nullptr);
-        out[count].quantity = std::strtod(view.c_str() + qty_start, nullptr);
+        out[count].price = std::strtod(view.c_str() + price_quote + 1, nullptr);
+        out[count].quantity = std::strtod(view.c_str() + qty_quote + 1, nullptr);
         ++count;
-
         pos = qty_end + 1;
-        const auto next_level = view.find("[\"", pos);
-        const auto side_end = view.find(']', pos);
-        if (side_end != std::string::npos && (next_level == std::string::npos || side_end < next_level)) break;
     }
 
     return count;
