@@ -11,7 +11,7 @@ import jwt
 from fastapi import APIRouter, HTTPException, Depends, Header
 from pydantic import BaseModel, EmailStr
 
-from app.db import get_conn, hash_password, now, row_to_dict
+from app.db import get_conn, hash_password, now, row_to_dict, verify_password
 from app.core.config import settings
 from app.deps import current_user
 
@@ -215,9 +215,9 @@ def login(payload: LoginRequest):
     email = payload.email.lower().strip()
     with get_conn() as conn:
         row = _get_user_by_email(conn, email)
-        if not row or row_to_dict(row)["password_hash"] != _ph(payload.password):
+        user = row_to_dict(row) if row else {}
+        if not row or not verify_password(payload.password, user.get("password_hash", "")):
             raise HTTPException(status_code=401, detail="Invalid email or password")
-        user = row_to_dict(row)
         resp = _auth_response(conn, user)
         conn.commit()
     return resp
