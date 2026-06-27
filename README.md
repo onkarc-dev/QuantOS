@@ -195,6 +195,77 @@ build\Release\prism_live_paper_trading.exe
 8. Run a backtest on historical market data or start live paper trading with WebSocket data.
 9. Use Journal, Analytics, and Quant Coach for review.
 
+## Required production environment
+
+Set these variables before starting a public or production-candidate deployment.
+
+### `PRISMFLOW_SECRET_KEY`
+
+Required in production. It signs JWT access and refresh tokens, so it must be stable across API and worker restarts. Use a strong random value of at least 32 characters.
+
+Generate a safe value with:
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(64))"
+```
+
+Changing this value invalidates existing sessions and refresh tokens. Missing, weak, or placeholder values prevent production startup.
+
+### `DATABASE_URL`
+
+Use PostgreSQL in production, for example:
+
+```text
+postgresql://user:password@host:5432/quantos
+```
+
+SQLite is only intended for local development and lightweight CI-style validation.
+
+### `REDIS_URL`
+
+Required for production background jobs and workers, for example:
+
+```text
+redis://redis:6379/0
+```
+
+Production backtests and background execution should run through Redis/RQ workers instead of request-thread fallback execution.
+
+### `CORS_ORIGINS`
+
+Must not be `*` in production. Set it to the deployed frontend origin or a comma-separated list of trusted frontend origins, for example:
+
+```text
+https://app.example.com
+```
+
+### SMTP and OTP settings
+
+Configure SMTP when real OTP emails are enabled:
+
+```text
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_USER=...
+SMTP_PASSWORD=...
+SMTP_FROM=no-reply@example.com
+SMTP_TLS=true
+EMAIL_OTP_DEV_RETURN=false
+```
+
+`EMAIL_OTP_DEV_RETURN=true` is for local development only and must not be used in production.
+
+### Token lifetimes
+
+The default token settings are:
+
+```text
+ACCESS_TOKEN_TTL_SECONDS=900
+REFRESH_TTL_SECONDS=2592000
+```
+
+Keep access tokens short-lived and refresh tokens longer-lived. Both depend on a stable `PRISMFLOW_SECRET_KEY`.
+
 ## Production-readiness notes
 
 Before public launch, verify:
