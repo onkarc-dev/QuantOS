@@ -16,28 +16,34 @@ public:
     }
 
     void apply_fill(const OrderExecution& e) {
-        if (e.status != OrderStatus::FILLED || e.filled_quantity <= 0.0) return;
+        const bool has_fill = e.filled_quantity > 0.0;
+        const bool fill_status = e.status == OrderStatus::FILLED || e.status == OrderStatus::PARTIALLY_FILLED || e.status == OrderStatus::EXPIRED;
+        if (!has_fill || !fill_status) return;
+
         auto& p = positions_[e.symbol];
         p.symbol = e.symbol;
+        const double effective_price = e.fill_price > 0.0 ? e.fill_price : e.avg_fill_price;
+        if (effective_price <= 0.0) return;
+
         const double signed_qty = (e.side == Side::BUY ? 1.0 : -1.0) * e.filled_quantity;
         const double old_qty = p.quantity;
         const double new_qty = old_qty + signed_qty;
         if (std::abs(old_qty) < 1e-12 || (old_qty > 0) == (signed_qty > 0)) {
             const double old_notional = std::abs(old_qty) * p.avg_price;
-            const double add_notional = std::abs(signed_qty) * e.fill_price;
+            const double add_notional = std::abs(signed_qty) * effective_price;
             p.avg_price = (std::abs(new_qty) > 1e-12) ? (old_notional + add_notional) / std::abs(new_qty) : 0.0;
             p.realized_pnl -= e.commission;
         } else {
             const double closing_qty = std::min(std::abs(old_qty), std::abs(signed_qty));
             const double direction = old_qty > 0 ? 1.0 : -1.0;
-            p.realized_pnl += closing_qty * (e.fill_price - p.avg_price) * direction - e.commission;
+            p.realized_pnl += closing_qty * (effective_price - p.avg_price) * direction - e.commission;
             if (std::abs(new_qty) < 1e-12) p.avg_price = 0.0;
-            else if ((new_qty > 0) != (old_qty > 0)) p.avg_price = e.fill_price;
+            else if ((new_qty > 0) != (old_qty > 0)) p.avg_price = effective_price;
         }
         p.quantity = new_qty;
         if (ledger_.is_open()) {
             ledger_ << (++event_id_) << ',' << e.symbol << ',' << to_string(e.side) << ',' << e.filled_quantity << ','
-                    << e.fill_price << ',' << e.commission << ',' << p.quantity << ',' << p.avg_price << ',' << p.realized_pnl << "\n";
+                    << effective_price << ',' << e.commission << ',' << p.quantity << ',' << p.avg_price << ',' << p.realized_pnl << "\n";
             ledger_.flush();
         }
     }
