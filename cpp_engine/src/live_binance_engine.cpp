@@ -69,6 +69,49 @@ private:
     std::atomic<uint64_t> write_index_{0}, count_{0}, total_ns_{0}, current_ns_{0}, max_ns_{0};
 };
 
+class L2DepthStreamSynchronizer {
+public:
+    bool apply(L2OrderBook& book, const L2Update& update) {
+        if (!synced_) {
+            ++sync_attempts_;
+            const bool ok = book.apply_snapshot(update);
+            synced_ = ok;
+            if (ok) ++applied_updates_;
+            else ++apply_failures_;
+            return ok;
+        }
+
+        if (book.apply_incremental(update, true)) {
+            ++applied_updates_;
+            return true;
+        }
+
+        // If a public Binance diff message is missed, the local book is no longer reliable.
+        // Without a REST snapshot dependency in this binary, fail closed by re-seeding from
+        // the latest depth message instead of letting stale best bid/ask remain frozen.
+        ++sequence_resyncs_;
+        book.clear();
+        const bool ok = book.apply_snapshot(update);
+        synced_ = ok;
+        if (ok) ++applied_updates_;
+        else ++apply_failures_;
+        return ok;
+    }
+
+    bool synced() const noexcept { return synced_; }
+    uint64_t sync_attempts() const noexcept { return sync_attempts_; }
+    uint64_t sequence_resyncs() const noexcept { return sequence_resyncs_; }
+    uint64_t applied_updates() const noexcept { return applied_updates_; }
+    uint64_t apply_failures() const noexcept { return apply_failures_; }
+
+private:
+    bool synced_ = false;
+    uint64_t sync_attempts_ = 0;
+    uint64_t sequence_resyncs_ = 0;
+    uint64_t applied_updates_ = 0;
+    uint64_t apply_failures_ = 0;
+};
+
 void print_signal_banner(const PrismSignal& signal) {
     std::cout << "\n========== PRISM SIGNAL GENERATED =========="
               << "\nEntry  : " << signal.entry_price
@@ -133,11 +176,14 @@ int main(int argc, char** argv) {
     std::signal(SIGTERM, signal_handler);
 
     L2OrderBook l2_book;
+    L2DepthStreamSynchronizer l2_sync;
     PrismLiveEngine prism(10);
     TradeManager trade_manager("trade_log.csv");
-    std::atomic<uint64_t> processed{0}, parsed{0}, parse_dropped{0}, book_updates{0}, book_parse_dropped{0};
+    std::atomic<uint64_t> processed{0}, parsed{0}, parse_dropped{0}, book_parse_dropped{0}, book_apply_failed{0};
     LatencyStats engine_latency_stats, ingest_latency_stats;
     std::atomic<uint64_t> last_price_scaled{0}, prism_signals{0};
+    std::atomic<uint64_t> book_updates{0}, l2_resyncs{0}, l2_applied{0};
+    std::atomic<bool> l2_synced{false};
     std::atomic<double> best_bid{0.0}, best_ask{0.0}, mid_price{0.0}, spread{0.0}, imbalance{0.0};
     BinanceClient client(symbol, true);
 
@@ -166,7 +212,10 @@ int main(int argc, char** argv) {
                     book_parse_dropped.fetch_add(1, std::memory_order_relaxed);
                     continue;
                 }
-                l2_book.apply_incremental(update, true);
+                if (!l2_sync.apply(l2_book, update)) {
+                    book_apply_failed.fetch_add(1, std::memory_order_relaxed);
+                    continue;
+                }
                 const BookSnapshot s = l2_book.snapshot(10);
                 best_bid.store(s.best_bid, std::memory_order_relaxed);
                 best_ask.store(s.best_ask, std::memory_order_relaxed);
@@ -174,6 +223,9 @@ int main(int argc, char** argv) {
                 spread.store(s.spread, std::memory_order_relaxed);
                 imbalance.store(s.depth_imbalance, std::memory_order_relaxed);
                 book_updates.store(s.updates, std::memory_order_relaxed);
+                l2_synced.store(l2_sync.synced(), std::memory_order_relaxed);
+                l2_resyncs.store(l2_sync.sequence_resyncs(), std::memory_order_relaxed);
+                l2_applied.store(l2_sync.applied_updates(), std::memory_order_relaxed);
             } else PAUSE();
         }
     });
@@ -205,7 +257,7 @@ int main(int argc, char** argv) {
     std::thread feed_thread([&]() { client.run(); });
 
     std::cout << "QuantOS market-data engine running. Streams: " << symbol << "@trade + " << symbol << "@depth@100ms\n"
-              << "L2 order book enabled. L3 abstraction compiled but not fed by Binance public stream because Binance public depth has no per-order IDs.\n";
+              << "L2 order book enabled with stream bootstrap/resync. L3 abstraction compiled but not fed by Binance public stream because Binance public depth has no per-order IDs.\n";
 
     uint64_t last_processed = 0;
     while (running.load(std::memory_order_relaxed)) {
@@ -222,10 +274,14 @@ int main(int argc, char** argv) {
                   << " market_ws_dropped=" << client.market_dropped()
                   << " parse_dropped=" << parse_dropped.load(std::memory_order_relaxed)
                   << " book_parse_dropped=" << book_parse_dropped.load(std::memory_order_relaxed)
+                  << " book_apply_failed=" << book_apply_failed.load(std::memory_order_relaxed)
                   << " raw_queue=" << raw_trade_queue.size_approx()
                   << " market_queue=" << raw_market_queue.size_approx()
                   << " trade_queue=" << trade_queue.size_approx()
                   << " last_price=" << last_price
+                  << " l2_synced=" << (l2_synced.load(std::memory_order_relaxed) ? 1 : 0)
+                  << " l2_resyncs=" << l2_resyncs.load(std::memory_order_relaxed)
+                  << " l2_applied=" << l2_applied.load(std::memory_order_relaxed)
                   << " best_bid=" << best_bid.load(std::memory_order_relaxed)
                   << " best_ask=" << best_ask.load(std::memory_order_relaxed)
                   << " spread=" << spread.load(std::memory_order_relaxed)
