@@ -24,22 +24,34 @@ def current_user(authorization: str | None = Header(default=None)):
     except Exception:
         user_id = ""
 
+    now_iso = datetime.datetime.utcnow().isoformat() + "Z"
     with get_conn() as conn:
-        if user_id:
-            p = "%s" if settings.is_postgres() else "?"
-            row = conn.execute(f"SELECT id,email,name,onboarding_completed FROM users WHERE id={p}", (user_id,)).fetchone()
-        elif settings.is_postgres():
-            row = conn.execute("""
-                SELECT u.id, u.email, u.name, u.onboarding_completed
-                FROM sessions s JOIN users u ON u.id = s.user_id
-                WHERE s.token = %s AND s.expires_at > %s
-            """, (token, datetime.datetime.utcnow().isoformat() + "Z")).fetchone()
+        if settings.is_postgres():
+            if user_id:
+                row = conn.execute("""
+                    SELECT u.id, u.email, u.name, u.onboarding_completed
+                    FROM sessions s JOIN users u ON u.id = s.user_id
+                    WHERE s.token = %s AND s.user_id = %s AND s.expires_at > %s
+                """, (token, user_id, now_iso)).fetchone()
+            else:
+                row = conn.execute("""
+                    SELECT u.id, u.email, u.name, u.onboarding_completed
+                    FROM sessions s JOIN users u ON u.id = s.user_id
+                    WHERE s.token = %s AND s.expires_at > %s
+                """, (token, now_iso)).fetchone()
         else:
-            row = conn.execute("""
-                SELECT u.id, u.email, u.name, u.onboarding_completed
-                FROM sessions s JOIN users u ON u.id = s.user_id
-                WHERE s.token = ? AND s.expires_at > ?
-            """, (token, datetime.datetime.utcnow().isoformat() + "Z")).fetchone()
+            if user_id:
+                row = conn.execute("""
+                    SELECT u.id, u.email, u.name, u.onboarding_completed
+                    FROM sessions s JOIN users u ON u.id = s.user_id
+                    WHERE s.token = ? AND s.user_id = ? AND s.expires_at > ?
+                """, (token, user_id, now_iso)).fetchone()
+            else:
+                row = conn.execute("""
+                    SELECT u.id, u.email, u.name, u.onboarding_completed
+                    FROM sessions s JOIN users u ON u.id = s.user_id
+                    WHERE s.token = ? AND s.expires_at > ?
+                """, (token, now_iso)).fetchone()
 
     if not row:
         raise HTTPException(status_code=401, detail="Invalid or expired token. Please log in again.")
