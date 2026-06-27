@@ -53,6 +53,16 @@ target_include_directories(exchange_simulator_tests PRIVATE
 
 add_test(NAME exchange_simulator_tests COMMAND exchange_simulator_tests)
 
+add_executable(event_store_tests
+    tests/event_store_tests.cpp
+)
+
+target_include_directories(event_store_tests PRIVATE
+    cpp_engine/src
+)
+
+add_test(NAME event_store_tests COMMAND event_store_tests)
+
 add_executable(benchmark_engine
     cpp_engine/benchmarks/benchmark_engine.cpp
 )
