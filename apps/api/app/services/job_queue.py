@@ -150,6 +150,7 @@ class RQJobQueue:
         try:
             from redis import Redis
             from rq import Queue as _RQ
+            from rq import Retry as _Retry
             from rq.job import Job as _RQJob
         except ImportError:
             raise RuntimeError(
@@ -159,6 +160,7 @@ class RQJobQueue:
             )
         self._redis = Redis.from_url(redis_url)
         self._rq = _RQ(queue_name, connection=self._redis)
+        self._Retry = _Retry
         self._RQJob = _RQJob
 
     def enqueue(self, kind: str, payload: Dict[str, Any]) -> QueueJob:
@@ -171,6 +173,7 @@ class RQJobQueue:
             job_timeout=240,
             result_ttl=86400,
             failure_ttl=86400,
+            retry=self._Retry(max=1, interval=[30]),
         )
         return QueueJob(
             id=rq_job.id,
