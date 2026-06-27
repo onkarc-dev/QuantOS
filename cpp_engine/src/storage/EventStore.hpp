@@ -10,7 +10,10 @@
 class EventStore {
 public:
     explicit EventStore(const std::string& path = "events.jsonl") : path_(path) {
-        std::filesystem::create_directories(std::filesystem::path(path_).parent_path());
+        const auto parent = std::filesystem::path(path_).parent_path();
+        if (!parent.empty()) {
+            std::filesystem::create_directories(parent);
+        }
         out_.open(path_, std::ios::out | std::ios::app);
     }
 
