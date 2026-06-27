@@ -24,6 +24,33 @@ class BacktestPayload(BaseModel):
     config: dict = {}
 
 
+def _p() -> str:
+    return "%s" if settings.is_postgres() else "?"
+
+
+def _insert_queued_job(job_id: str, user_id: str, payload: BacktestPayload) -> None:
+    p = _p()
+    with get_conn() as conn:
+        conn.execute(
+            f"""
+            INSERT INTO jobs(id,user_id,strategy_id,mode,status,symbols_json,timeframe,output_dir,created_at)
+            VALUES({p},{p},{p},{p},{p},{p},{p},{p},{p})
+            """,
+            (
+                job_id,
+                user_id,
+                payload.strategy_id,
+                "backtest",
+                "queued",
+                json.dumps(payload.symbols),
+                payload.timeframe,
+                "",
+                now(),
+            ),
+        )
+        conn.commit()
+
+
 @router.post("/submit-backtest", summary="Submit a backtest job (async)")
 def submit_backtest(payload: BacktestPayload, user=Depends(current_user)):
     """Queue a backtest job. Returns immediately with job ID. Use /jobs/{id} to poll."""
@@ -39,6 +66,8 @@ def submit_backtest(payload: BacktestPayload, user=Depends(current_user)):
         "end_date": payload.end_date,
         "config": payload.config,
     }
+
+    _insert_queued_job(job_id, user["id"], payload)
 
     # Queue the job (non-blocking)
     q_job = queue.enqueue("backtest", job_payload)
@@ -67,7 +96,7 @@ def submit_backtest(payload: BacktestPayload, user=Depends(current_user)):
 
 @router.get("/", summary="List jobs for current user")
 def list_jobs(user=Depends(current_user)):
-    p = "?" if not settings.is_postgres() else "%s"
+    p = _p()
     with get_conn() as conn:
         rows = conn.execute(
             f"SELECT * FROM jobs WHERE user_id={p} ORDER BY created_at DESC LIMIT 20",
@@ -89,7 +118,7 @@ def list_jobs(user=Depends(current_user)):
 
 @router.get("/{job_id}", summary="Get job status and details")
 def get_job(job_id: str, user=Depends(current_user)):
-    p = "?" if not settings.is_postgres() else "%s"
+    p = _p()
     with get_conn() as conn:
         row = conn.execute(
             f"SELECT * FROM jobs WHERE id={p} AND user_id={p}",
@@ -103,7 +132,7 @@ def get_job(job_id: str, user=Depends(current_user)):
 @router.get("/{job_id}/download-output", summary="Download all output files (ZIP)")
 def download_job_output(job_id: str, user=Depends(current_user)):
     """In production, return file download of outputs.zip. Here return file list."""
-    p = "?" if not settings.is_postgres() else "%s"
+    p = _p()
     with get_conn() as conn:
         row = conn.execute(
             f"SELECT output_dir FROM jobs WHERE id={p} AND user_id={p}",
