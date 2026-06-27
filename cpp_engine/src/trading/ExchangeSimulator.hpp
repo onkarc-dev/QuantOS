@@ -46,7 +46,8 @@ public:
         }
     };
 
-    explicit ExchangeSimulator(Config cfg = {}) : cfg_(cfg), rng_(cfg.seed) {}
+    ExchangeSimulator() : ExchangeSimulator(Config{}) {}
+    explicit ExchangeSimulator(Config cfg) : cfg_(cfg), rng_(cfg.seed) {}
 
     MatchingEngine::MatchResult submit_order(const OrderRequest& request, double reference_mid_price, uint64_t receive_ts_ns = 0) {
         MatchingEngine::MatchResult result;
