@@ -47,7 +47,7 @@ services:
       ENV: ${ENV:-production}
       DATABASE_URL: postgresql://quantos:${POSTGRES_PASSWORD:-quantos_local_dev}@postgres:5432/quantos
       REDIS_URL: redis://redis:6379/0
-      PRISMFLOW_SECRET_KEY: ${PRISMFLOW_SECRET_KEY:-change-this-before-public-deploy}
+      PRISMFLOW_SECRET_KEY: ${PRISMFLOW_SECRET_KEY:?Set PRISMFLOW_SECRET_KEY before starting production stack}
       OUTPUTS_ROOT: /app/outputs
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
       ACCESS_TOKEN_TTL_SECONDS: ${ACCESS_TOKEN_TTL_SECONDS:-900}
@@ -106,7 +106,7 @@ services:
       ENV: ${ENV:-production}
       DATABASE_URL: postgresql://quantos:${POSTGRES_PASSWORD:-quantos_local_dev}@postgres:5432/quantos
       REDIS_URL: redis://redis:6379/0
-      PRISMFLOW_SECRET_KEY: ${PRISMFLOW_SECRET_KEY:-change-this-before-public-deploy}
+      PRISMFLOW_SECRET_KEY: ${PRISMFLOW_SECRET_KEY:?Set PRISMFLOW_SECRET_KEY before starting production stack}
       OUTPUTS_ROOT: /app/outputs
       EMAIL_OTP_DEV_RETURN: ${EMAIL_OTP_DEV_RETURN:-false}
       SMTP_HOST: ${SMTP_HOST:-}
