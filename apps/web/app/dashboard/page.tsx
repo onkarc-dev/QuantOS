@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { api, AuthUser, fetchMe, formatApiError } from '../../lib/api';
 import {
-  LineChart, Line, AreaChart, Area, BarChart, Bar,
+  AreaChart, Area,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine
 } from 'recharts';
 
@@ -19,6 +19,69 @@ interface CoachReport {
   strengths?: string[];
   weaknesses?: string[];
 }
+interface LiveEvent { event_type?: string; raw?: string; symbol?: string; status?: string; reason?: string; rejection_reason?: string; filled_quantity?: number | string; requested_quantity?: number | string; qty?: number | string; price?: number | string; fill?: number | string; }
+interface LiveStatus {
+  status?: string;
+  symbol?: string;
+  real_time?: boolean;
+  last_price?: number;
+  processed?: number;
+  metrics?: Record<string, any>;
+  session_metrics?: Record<string, any>;
+  symbol_states?: Record<string, Record<string, any>>;
+  events?: LiveEvent[];
+  markets?: Record<string, any>[];
+  error?: string;
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+const n = (v: any, fallback = 0) => {
+  const x = Number(v);
+  return Number.isFinite(x) ? x : fallback;
+};
+const fmt = (v: any, digits = 2, suffix = '') => Number.isFinite(Number(v)) ? `${Number(v).toFixed(digits)}${suffix}` : '—';
+const pct = (v: any) => Number.isFinite(Number(v)) ? `${Number(v).toFixed(1)}%` : '—';
+const firstValue = (...values: any[]) => values.find(v => v !== undefined && v !== null && v !== '');
+const latestEvent = (events?: LiveEvent[]) => events?.length ? events[events.length - 1] : undefined;
+const latestOrderEvent = (events?: LiveEvent[]) => [...(events || [])].reverse().find(e => String(e.event_type || '').includes('FILL') || e.status || e.reason || e.rejection_reason);
+
+function buildExecutionQuality(live: LiveStatus | null) {
+  const metrics = { ...(live?.metrics || {}), ...(live?.session_metrics || {}) };
+  const ev = latestOrderEvent(live?.events);
+  const filled = n(firstValue(metrics.filled_quantity, metrics.last_filled_quantity, ev?.filled_quantity, ev?.qty), 0);
+  const requested = n(firstValue(metrics.requested_quantity, metrics.order_qty, metrics.last_order_qty, ev?.requested_quantity, ev?.qty), 0);
+  const fillRatio = Number.isFinite(n(metrics.fill_ratio, NaN)) ? n(metrics.fill_ratio) * (n(metrics.fill_ratio) <= 1 ? 100 : 1) : (requested > 0 ? (filled / requested) * 100 : NaN);
+  const expected = n(firstValue(metrics.expected_price, metrics.mid_price, metrics.mid, metrics.last_price, live?.last_price), 0);
+  const fillPrice = n(firstValue(metrics.fill_price, metrics.avg_fill_price, metrics.last_fill_price, ev?.fill, ev?.price), 0);
+  const side = String(firstValue(metrics.side, metrics.open_side, metrics.last_side, '')).toUpperCase();
+  let derivedSlippage = NaN;
+  if (expected > 0 && fillPrice > 0) {
+    const sign = side === 'SELL' ? -1 : 1;
+    derivedSlippage = ((fillPrice - expected) / expected) * 10000 * sign;
+  }
+  const bid = n(firstValue(metrics.best_bid, metrics.bid, metrics.bbo_bid), NaN);
+  const ask = n(firstValue(metrics.best_ask, metrics.ask, metrics.bbo_ask), NaN);
+  const mid = Number.isFinite(n(metrics.mid_price, NaN)) ? n(metrics.mid_price) : (Number.isFinite(bid) && Number.isFinite(ask) ? (bid + ask) / 2 : n(live?.last_price, NaN));
+  const spread = Number.isFinite(n(metrics.spread_bps, NaN)) ? n(metrics.spread_bps) : (Number.isFinite(bid) && Number.isFinite(ask) && mid > 0 ? ((ask - bid) / mid) * 10000 : NaN);
+  const orderStatus = String(firstValue(metrics.order_status, metrics.last_order_status, ev?.status, metrics.last_action, live?.status, 'IDLE'));
+  const rejectionReason = String(firstValue(metrics.rejection_reason, metrics.reject_reason, metrics.last_rejection_reason, ev?.rejection_reason, ev?.reason, live?.error, '—'));
+  const partialFill = String(orderStatus).toUpperCase().includes('PARTIAL') || n(metrics.partial_fills) > 0 || String(ev?.event_type || '').includes('PARTIAL');
+
+  return {
+    orderStatus,
+    fillRatio,
+    slippageBps: firstValue(metrics.slippage_bps, metrics.last_slippage_bps, derivedSlippage),
+    queueDelayUs: firstValue(metrics.queue_delay_us, metrics.queue_delay, metrics.p95_queue_us, metrics.p95_ingest_us),
+    rejectionReason,
+    partialFill,
+    spreadBps: spread,
+    mid,
+    imbalance: firstValue(metrics.imbalance, metrics.order_book_imbalance, metrics.book_imbalance),
+    p95EngineUs: firstValue(metrics.p95_engine_us, 0),
+    p99EngineUs: firstValue(metrics.p99_engine_us, 0),
+    p95IngestUs: firstValue(metrics.p95_ingest_us, 0),
+  };
+}
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 function StatCard({ label, value, sub, accent }: { label: string; value: any; sub?: string; accent?: string }) {
@@ -27,6 +90,18 @@ function StatCard({ label, value, sub, accent }: { label: string; value: any; su
       <div style={{ color: '#888', fontSize: 12, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>{label}</div>
       <div style={{ fontSize: 28, fontWeight: 700, color: accent || '#e2e8f0' }}>{value ?? '—'}</div>
       {sub && <div style={{ color: '#666', fontSize: 12, marginTop: 4 }}>{sub}</div>}
+    </div>
+  );
+}
+
+function MiniMetric({ label, value, sub }: { label: string; value: any; sub?: string }) {
+  return (
+    <div style={{ borderBottom: '1px solid #2a2a4a', padding: '10px 0' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 14 }}>
+        <span style={{ color: '#94a3b8' }}>{label}</span>
+        <b style={{ color: '#e2e8f0' }}>{value}</b>
+      </div>
+      {sub && <div style={{ color: '#666', fontSize: 12, marginTop: 3 }}>{sub}</div>}
     </div>
   );
 }
@@ -102,6 +177,7 @@ export default function Dashboard() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [report, setReport] = useState<CoachReport | null>(null);
+  const [live, setLive] = useState<LiveStatus | null>(null);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [msg, setMsg] = useState('');
   const [loading, setLoading] = useState(true);
@@ -111,14 +187,16 @@ export default function Dashboard() {
       try {
         const me = await fetchMe();
         setUser(me);
-        const [jobsRes, strategiesRes] = await Promise.all([
+        const [jobsRes, strategiesRes, liveRes] = await Promise.all([
           api('/jobs/'),
           api('/strategies'),
+          api('/live-paper/status').catch(() => null),
         ]);
         const jobList = Array.isArray(jobsRes) ? jobsRes : (jobsRes as { jobs?: Job[] }).jobs || [];
         const strategyList = Array.isArray(strategiesRes) ? strategiesRes : [];
         setJobs(jobList);
         setStrategies(strategyList);
+        setLive(liveRes as LiveStatus | null);
       } catch (e) {
         setMsg(formatApiError(e));
       } finally {
@@ -126,6 +204,10 @@ export default function Dashboard() {
       }
     }
     loadDashboard();
+    const t = window.setInterval(() => {
+      api('/live-paper/status').then((res) => setLive(res as LiveStatus)).catch(() => {});
+    }, 3000);
+    return () => window.clearInterval(t);
   }, []);
 
   useEffect(() => {
@@ -141,6 +223,10 @@ export default function Dashboard() {
   const mc = report?.monte_carlo || {};
   const fit = report?.lifestyle_fit || {};
   const discipline = report?.rule_discipline || {};
+  const quality = buildExecutionQuality(live);
+  const liveMetrics = { ...(live?.metrics || {}), ...(live?.session_metrics || {}) };
+  const symbolRows = Object.values(live?.symbol_states || {});
+  const latest = latestEvent(live?.events);
 
   const style = {
     page: { background: '#0d0d1a', minHeight: '100vh', padding: '24px', fontFamily: 'system-ui, sans-serif', color: '#e2e8f0' },
@@ -156,6 +242,9 @@ export default function Dashboard() {
     btnSec: { background: 'transparent', color: '#6366f1', border: '1px solid #6366f1', borderRadius: 8, padding: '10px 20px', cursor: 'pointer', fontWeight: 600, textDecoration: 'none', display: 'inline-block', fontSize: 14, marginLeft: 12 },
     danger: { background: '#2a1a1a', border: '1px solid #ef444444', borderRadius: 8, padding: '12px 16px', color: '#ef4444', marginBottom: 16 },
     tag: { background: '#1e293b', borderRadius: 6, padding: '2px 8px', fontSize: 12, color: '#94a3b8', display: 'inline-block', marginRight: 6 },
+    table: { width: '100%', borderCollapse: 'collapse' as const, fontSize: 13 },
+    th: { textAlign: 'left' as const, color: '#888', borderBottom: '1px solid #2a2a4a', padding: '8px 6px' },
+    td: { color: '#cbd5e1', borderBottom: '1px solid #2a2a4a', padding: '8px 6px' },
   };
 
   if (loading) return <div style={style.page}><div style={style.hero}><h1 style={style.h1}>Loading…</h1></div></div>;
@@ -176,6 +265,58 @@ export default function Dashboard() {
         <StatCard label="Strategies" value={strategies.length} sub="10 symbols supported" />
         <StatCard label="Jobs Run" value={jobs.length} />
         <StatCard label="Real Money" value="DISABLED" accent="#ef4444" sub="Paper only — safe" />
+      </div>
+
+      {/* Live execution / latency dashboard */}
+      <div style={style.grid4}>
+        <StatCard label="Order Status" value={quality.orderStatus} sub={`Live paper: ${live?.status || 'idle'}`} accent={String(quality.orderStatus).includes('REJECT') ? '#ef4444' : '#22c55e'} />
+        <StatCard label="Fill Ratio" value={pct(quality.fillRatio)} sub={quality.partialFill ? 'Partial fill detected' : 'Full/none based on latest order'} />
+        <StatCard label="Slippage" value={fmt(quality.slippageBps, 2, ' bps')} sub="Derived when fill + expected price exist" />
+        <StatCard label="Queue Delay" value={fmt(quality.queueDelayUs, 2, ' µs')} sub="Queue/ingest latency proxy" />
+      </div>
+
+      <div style={style.grid2}>
+        <div style={style.card}>
+          <div style={style.cardTitle}>Latency Dashboard</div>
+          <MiniMetric label="P95 engine latency" value={fmt(quality.p95EngineUs, 2, ' µs')} />
+          <MiniMetric label="P99 engine latency" value={fmt(quality.p99EngineUs, 2, ' µs')} />
+          <MiniMetric label="P95 ingest / queue latency" value={fmt(quality.p95IngestUs, 2, ' µs')} />
+          <MiniMetric label="Processed messages" value={live?.processed ?? liveMetrics.processed ?? 0} sub={`Real-time: ${live?.real_time ? 'yes' : 'no'}`} />
+        </div>
+        <div style={style.card}>
+          <div style={style.cardTitle}>Execution Quality Metrics</div>
+          <MiniMetric label="Rejection reason" value={quality.rejectionReason || '—'} />
+          <MiniMetric label="Partial-fill display" value={quality.partialFill ? 'YES' : 'NO'} />
+          <MiniMetric label="Latest event" value={latest?.event_type || '—'} sub={latest?.raw ? String(latest.raw).slice(0, 160) : undefined} />
+          <MiniMetric label="Order / fill status" value={quality.orderStatus || '—'} />
+        </div>
+      </div>
+
+      <div style={style.grid2}>
+        <div style={style.card}>
+          <div style={style.cardTitle}>Spread / Mid / Imbalance</div>
+          <MiniMetric label="Mid price" value={fmt(quality.mid, 4)} />
+          <MiniMetric label="Spread" value={fmt(quality.spreadBps, 2, ' bps')} />
+          <MiniMetric label="Order-book imbalance" value={fmt(quality.imbalance, 4)} />
+          <MiniMetric label="Last traded price" value={fmt(live?.last_price, 4)} />
+        </div>
+        <div style={style.card}>
+          <div style={style.cardTitle}>Per-Symbol Live State</div>
+          {symbolRows.length ? (
+            <table style={style.table}>
+              <thead><tr><th style={style.th}>Symbol</th><th style={style.th}>Status</th><th style={style.th}>Price</th><th style={style.th}>Trades</th><th style={style.th}>P95 µs</th></tr></thead>
+              <tbody>{symbolRows.slice(0, 8).map((r, i) => (
+                <tr key={`${r.symbol || i}`}>
+                  <td style={style.td}>{r.symbol || '—'}</td>
+                  <td style={style.td}>{r.order_status || r.last_action || live?.status || '—'}</td>
+                  <td style={style.td}>{fmt(r.last_price, 4)}</td>
+                  <td style={style.td}>{r.total_trades ?? 0}</td>
+                  <td style={style.td}>{fmt(r.p95_engine_us, 2)}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          ) : <p style={{ color: '#888', fontSize: 14 }}>No active symbol state yet. Start live paper trading to populate this dashboard.</p>}
+        </div>
       </div>
 
       {/* Quant Coach summary (if report available) */}
@@ -216,7 +357,7 @@ export default function Dashboard() {
               )) : <div style={{ color: '#666', fontSize: 14 }}>No strengths detected yet. Run more trades.</div>}
             </div>
             <div style={style.card}>
-              <div style={style.cardTitle}>⚠️ Weaknesses</div>
+              <div style={style.cardTitle}>⚠ Weaknesses</div>
               {report.weaknesses?.length ? report.weaknesses.map((w, i) => (
                 <div key={i} style={{ padding: '8px 0', borderBottom: '1px solid #2a2a4a', fontSize: 14, color: '#f59e0b' }}>• {w}</div>
               )) : <div style={{ color: '#666', fontSize: 14 }}>No weaknesses detected. Good sign.</div>}
