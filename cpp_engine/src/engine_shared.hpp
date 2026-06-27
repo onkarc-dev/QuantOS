@@ -96,10 +96,13 @@ public:
     }
 };
 
-// Raw queues are intentionally large because websocket input is bursty.
+// Raw trade queue can remain larger because each trade message is small.
 using RawTradeQueue = SimpleSPSCQueue<RawTradeMessage, 1 << 20>;
 using TradeQueue = SimpleSPSCQueue<TradePacket, 1 << 22>;
-using RawMarketQueue = SimpleSPSCQueue<RawMarketMessage, 1 << 18>;
+
+// RawMarketMessage is 8 KiB, so 1 << 18 exceeds MSVC object-size limits.
+// 4096 slots is ~32 MiB and avoids C2148/C1060 while remaining burst-tolerant.
+using RawMarketQueue = SimpleSPSCQueue<RawMarketMessage, 1 << 12>;
 
 extern RawTradeQueue raw_trade_queue;
 extern TradeQueue trade_queue;
