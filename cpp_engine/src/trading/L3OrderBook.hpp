@@ -1,5 +1,7 @@
 #pragma once
 
+#include "L2OrderBook.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -38,7 +40,6 @@ public:
         if (new_quantity <= 0.0) return cancel(order_id);
 
         it->second.quantity = new_quantity;
-        // Quantity-only amend keeps existing FIFO priority.
         refresh_level(it->second.side, it->second.price);
         return true;
     }
@@ -80,8 +81,6 @@ public:
         }
 
         it->second.quantity -= executed_quantity;
-        // Partial fills do not change FIFO priority, but positions are refreshed
-        // deterministically in case earlier orders were already removed.
         refresh_level(it->second.side, it->second.price);
         return true;
     }
@@ -119,6 +118,30 @@ public:
             if (it != orders_.end()) total += it->second.quantity;
         }
         return total;
+    }
+
+    L2OrderBook aggregate_to_l2(uint64_t sequence = 0) const {
+        L2OrderBook l2;
+        std::vector<L2OrderBook::Level> bid_levels;
+        std::vector<L2OrderBook::Level> ask_levels;
+        for (const auto& level : bids_) {
+            double quantity = 0.0;
+            for (uint64_t order_id : level.second) {
+                auto it = orders_.find(order_id);
+                if (it != orders_.end()) quantity += it->second.quantity;
+            }
+            if (quantity > 0.0) bid_levels.push_back(L2OrderBook::Level{level.first, quantity});
+        }
+        for (const auto& level : asks_) {
+            double quantity = 0.0;
+            for (uint64_t order_id : level.second) {
+                auto it = orders_.find(order_id);
+                if (it != orders_.end()) quantity += it->second.quantity;
+            }
+            if (quantity > 0.0) ask_levels.push_back(L2OrderBook::Level{level.first, quantity});
+        }
+        l2.reconstruct_snapshot(sequence, bid_levels, ask_levels);
+        return l2;
     }
 
     std::size_t size() const { return orders_.size(); }
