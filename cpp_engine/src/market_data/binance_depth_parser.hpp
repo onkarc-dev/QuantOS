@@ -11,19 +11,31 @@
 
 namespace quantos::market_data::binance_depth_parser {
 
+inline std::size_t skip_ws(const std::string& view, std::size_t pos) {
+    while (pos < view.size() && std::isspace(static_cast<unsigned char>(view[pos]))) ++pos;
+    return pos;
+}
+
 inline uint64_t read_uint_after(const std::string& view, const char* key) {
-    const std::string pattern = std::string("\"") + key + "\":";
-    const auto pos = view.find(pattern);
-    if (pos == std::string::npos) return 0;
-    return static_cast<uint64_t>(std::strtoull(view.c_str() + pos + pattern.size(), nullptr, 10));
+    const std::string pattern = std::string("\"") + key + "\"";
+    const auto key_pos = view.find(pattern);
+    if (key_pos == std::string::npos) return 0;
+    auto colon = view.find(':', key_pos + pattern.size());
+    if (colon == std::string::npos) return 0;
+    const auto value_pos = skip_ws(view, colon + 1);
+    return static_cast<uint64_t>(std::strtoull(view.c_str() + value_pos, nullptr, 10));
 }
 
 inline bool read_string_after(const std::string& view, const char* key, char* out, std::size_t out_size) {
     if (out_size == 0) return false;
-    const std::string pattern = std::string("\"") + key + "\":\"";
-    const auto pos = view.find(pattern);
-    if (pos == std::string::npos) return false;
-    const auto start = pos + pattern.size();
+    const std::string pattern = std::string("\"") + key + "\"";
+    const auto key_pos = view.find(pattern);
+    if (key_pos == std::string::npos) return false;
+    auto colon = view.find(':', key_pos + pattern.size());
+    if (colon == std::string::npos) return false;
+    auto start = skip_ws(view, colon + 1);
+    if (start >= view.size() || view[start] != '"') return false;
+    ++start;
     const auto end = view.find('"', start);
     if (end == std::string::npos) return false;
     const std::size_t n = std::min(out_size - 1, end - start);
@@ -55,13 +67,39 @@ inline std::size_t matching_array_end(const std::string& view, std::size_t array
     return std::string::npos;
 }
 
+inline bool parse_number_token(const std::string& view, std::size_t& pos, std::size_t limit, double& out) {
+    pos = skip_ws(view, pos);
+    if (pos >= limit) return false;
+
+    const char* begin = view.c_str() + pos;
+    char* end = nullptr;
+
+    if (view[pos] == '"') {
+        ++pos;
+        begin = view.c_str() + pos;
+        out = std::strtod(begin, &end);
+        if (end == begin) return false;
+        pos = static_cast<std::size_t>(end - view.c_str());
+        if (pos >= limit || view[pos] != '"') return false;
+        ++pos;
+        return true;
+    }
+
+    out = std::strtod(begin, &end);
+    if (end == begin) return false;
+    pos = static_cast<std::size_t>(end - view.c_str());
+    return pos <= limit;
+}
+
 inline std::size_t parse_side(const std::string& view,
                               const char* key,
                               std::array<PriceLevelUpdate, L2Update::kMaxLevelsPerMessage>& out) {
-    const std::string pattern = std::string("\"") + key + "\":";
+    const std::string pattern = std::string("\"") + key + "\"";
     auto key_pos = view.find(pattern);
     if (key_pos == std::string::npos) return 0;
-    auto outer_open = view.find('[', key_pos + pattern.size());
+    auto colon = view.find(':', key_pos + pattern.size());
+    if (colon == std::string::npos) return 0;
+    auto outer_open = view.find('[', colon + 1);
     if (outer_open == std::string::npos) return 0;
     const auto outer_close = matching_array_end(view, outer_open);
     if (outer_close == std::string::npos || outer_close <= outer_open) return 0;
@@ -71,19 +109,20 @@ inline std::size_t parse_side(const std::string& view,
     while (pos < outer_close && count < out.size()) {
         const auto level_open = view.find('[', pos);
         if (level_open == std::string::npos || level_open >= outer_close) break;
-        const auto price_quote = view.find('"', level_open);
-        if (price_quote == std::string::npos || price_quote >= outer_close) break;
-        const auto price_end = view.find('"', price_quote + 1);
-        if (price_end == std::string::npos || price_end >= outer_close) break;
-        const auto qty_quote = view.find('"', price_end + 1);
-        if (qty_quote == std::string::npos || qty_quote >= outer_close) break;
-        const auto qty_end = view.find('"', qty_quote + 1);
-        if (qty_end == std::string::npos || qty_end >= outer_close) break;
+        const auto level_close = matching_array_end(view, level_open);
+        if (level_close == std::string::npos || level_close > outer_close) break;
 
-        out[count].price = std::strtod(view.c_str() + price_quote + 1, nullptr);
-        out[count].quantity = std::strtod(view.c_str() + qty_quote + 1, nullptr);
-        ++count;
-        pos = qty_end + 1;
+        std::size_t value_pos = level_open + 1;
+        double price = 0.0;
+        double quantity = 0.0;
+        if (!parse_number_token(view, value_pos, level_close, price)) break;
+        auto comma = view.find(',', value_pos);
+        if (comma == std::string::npos || comma >= level_close) break;
+        value_pos = comma + 1;
+        if (!parse_number_token(view, value_pos, level_close, quantity)) break;
+
+        out[count++] = PriceLevelUpdate{price, quantity};
+        pos = level_close + 1;
     }
 
     return count;
