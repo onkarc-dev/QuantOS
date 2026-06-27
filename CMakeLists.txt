@@ -13,6 +13,16 @@ else()
     add_compile_options(-O3 -DNDEBUG)
 endif()
 
+add_executable(l2_order_book_tests
+    tests/l2_order_book_tests.cpp
+)
+
+target_include_directories(l2_order_book_tests PRIVATE
+    cpp_engine/src
+)
+
+add_test(NAME l2_order_book_tests COMMAND l2_order_book_tests)
+
 add_executable(l3_order_book_tests
     tests/l3_order_book_tests.cpp
 )
