@@ -72,6 +72,10 @@ struct OrderExecution {
     double fill_ratio = 0.0;
     uint64_t exchange_ts_ns = 0;
     uint64_t ack_ts_ns = 0;
+    uint64_t network_latency_ns = 0;
+    uint64_t gateway_latency_ns = 0;
+    uint64_t exchange_latency_ns = 0;
+    uint64_t acknowledgement_delay_ns = 0;
     uint64_t total_latency_ns = 0;
     uint64_t queue_delay_ns = 0;
     std::string message;
