@@ -3,12 +3,19 @@ from pathlib import Path
 from app.services.output_reader import read_csv, read_json, read_jsonl, output_manifest
 from app.deps import current_user
 from app.db import get_conn
+from app.core.config import settings
 
 router = APIRouter()
 
+
+def _p() -> str:
+    return "%s" if settings.is_postgres() else "?"
+
+
 def job_dir(user_id: str, job_id: str) -> Path:
+    p = _p()
     with get_conn() as conn:
-        r = conn.execute("SELECT output_dir FROM jobs WHERE id=? AND user_id=?", (job_id, user_id)).fetchone()
+        r = conn.execute(f"SELECT output_dir FROM jobs WHERE id={p} AND user_id={p}", (job_id, user_id)).fetchone()
     if not r:
         raise HTTPException(status_code=404, detail="Job not found")
     return Path(r["output_dir"])
