@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -93,39 +94,24 @@ public:
     bool cancel_order(uint64_t client_order_id) {
         auto loc_it = locations_.find(client_order_id);
         if (loc_it == locations_.end()) return false;
-
         const auto location = loc_it->second;
-        auto& book = location.side == Side::BUY ? bids_ : asks_;
-        auto level_it = book.find(location.price);
-        if (level_it == book.end()) {
-            locations_.erase(loc_it);
-            return false;
+        bool removed = false;
+        if (location.side == Side::BUY) {
+            removed = erase_from_book(bids_, client_order_id, location.price);
+        } else {
+            removed = erase_from_book(asks_, client_order_id, location.price);
         }
-
-        auto& queue = level_it->second;
-        for (auto it = queue.begin(); it != queue.end(); ++it) {
-            if (it->request.client_order_id == client_order_id) {
-                queue.erase(it);
-                if (queue.empty()) book.erase(level_it);
-                locations_.erase(loc_it);
-                return true;
-            }
-        }
-
         locations_.erase(loc_it);
-        return false;
+        return removed;
     }
 
     std::optional<RestingOrder> get_order(uint64_t client_order_id) const {
         auto loc_it = locations_.find(client_order_id);
         if (loc_it == locations_.end()) return std::nullopt;
-        const auto* book = loc_it->second.side == Side::BUY ? &bids_ : &asks_;
-        auto level_it = book->find(loc_it->second.price);
-        if (level_it == book->end()) return std::nullopt;
-        for (const auto& order : level_it->second) {
-            if (order.request.client_order_id == client_order_id) return order;
+        if (loc_it->second.side == Side::BUY) {
+            return find_resting_order(bids_, client_order_id, loc_it->second.price);
         }
-        return std::nullopt;
+        return find_resting_order(asks_, client_order_id, loc_it->second.price);
     }
 
     std::vector<uint64_t> bid_order_ids(double price) const { return order_ids_at(bids_, price); }
@@ -233,6 +219,31 @@ private:
             quantity += fill.quantity;
         }
         return quantity > kEpsilon ? notional / quantity : 0.0;
+    }
+
+    template <typename BookT>
+    static bool erase_from_book(BookT& book, uint64_t client_order_id, double price) {
+        auto level_it = book.find(price);
+        if (level_it == book.end()) return false;
+        auto& queue = level_it->second;
+        for (auto it = queue.begin(); it != queue.end(); ++it) {
+            if (it->request.client_order_id == client_order_id) {
+                queue.erase(it);
+                if (queue.empty()) book.erase(level_it);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    template <typename BookT>
+    static std::optional<RestingOrder> find_resting_order(const BookT& book, uint64_t client_order_id, double price) {
+        auto level_it = book.find(price);
+        if (level_it == book.end()) return std::nullopt;
+        for (const auto& order : level_it->second) {
+            if (order.request.client_order_id == client_order_id) return order;
+        }
+        return std::nullopt;
     }
 
     template <typename BookT>
