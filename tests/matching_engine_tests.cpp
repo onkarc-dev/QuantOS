@@ -1,132 +1,33 @@
-#include "../cpp_engine/src/trading/MatchingEngine.hpp"
-
+#include "MatchingEngine.hpp"
 #include <cassert>
 #include <cmath>
 #include <vector>
 
 namespace {
+void assert_near(double actual, double expected) { assert(std::fabs(actual - expected) < 1e-9); }
+OrderRequest order(uint64_t id, Side side, OrderType type, double qty, double price = 0.0) { OrderRequest req; req.client_order_id=id; req.symbol="BTCUSDT"; req.side=side; req.type=type; req.quantity=qty; req.limit_price=price; return req; }
 
-void assert_near(double actual, double expected) {
-    assert(std::fabs(actual - expected) < 1e-9);
+void test_market_buy_hits_best_ask() { MatchingEngine engine; auto resting=engine.submit_order(order(1, Side::SELL, OrderType::LIMIT, 5.0, 101.0)); assert(resting.rested); auto result=engine.submit_order(order(2, Side::BUY, OrderType::MARKET, 2.0)); assert(result.execution.status==OrderStatus::FILLED); assert(result.fills.size()==1); assert(result.fills[0].resting_client_order_id==1); assert_near(result.fills[0].price,101.0); assert_near(result.execution.filled_quantity,2.0); assert_near(result.execution.avg_fill_price,101.0); assert_near(engine.ask_quantity(101.0),3.0); }
+void test_market_sell_hits_best_bid() { MatchingEngine engine; assert(engine.submit_order(order(10, Side::BUY, OrderType::LIMIT, 4.0, 99.0)).rested); auto result=engine.submit_order(order(11, Side::SELL, OrderType::MARKET, 1.5)); assert(result.execution.status==OrderStatus::FILLED); assert(result.fills.size()==1); assert(result.fills[0].resting_client_order_id==10); assert_near(result.fills[0].price,99.0); assert_near(engine.bid_quantity(99.0),2.5); }
+void test_limit_buy_crosses_ask() { MatchingEngine engine; assert(engine.submit_order(order(20, Side::SELL, OrderType::LIMIT, 3.0, 100.0)).rested); auto result=engine.submit_order(order(21, Side::BUY, OrderType::LIMIT, 2.0, 100.5)); assert(result.execution.status==OrderStatus::FILLED); assert(result.fills.size()==1); assert_near(result.fills[0].price,100.0); assert_near(engine.ask_quantity(100.0),1.0); }
+void test_limit_sell_crosses_bid() { MatchingEngine engine; assert(engine.submit_order(order(30, Side::BUY, OrderType::LIMIT, 3.0, 100.0)).rested); auto result=engine.submit_order(order(31, Side::SELL, OrderType::LIMIT, 2.0, 99.5)); assert(result.execution.status==OrderStatus::FILLED); assert(result.fills.size()==1); assert_near(result.fills[0].price,100.0); assert_near(engine.bid_quantity(100.0),1.0); }
+void test_fifo_priority() { MatchingEngine engine; assert(engine.submit_order(order(40, Side::SELL, OrderType::LIMIT, 1.0, 101.0)).rested); assert(engine.submit_order(order(41, Side::SELL, OrderType::LIMIT, 1.0, 101.0)).rested); assert(engine.submit_order(order(42, Side::SELL, OrderType::LIMIT, 1.0, 101.0)).rested); assert((engine.ask_order_ids(101.0)==std::vector<uint64_t>{40,41,42})); auto result=engine.submit_order(order(43, Side::BUY, OrderType::MARKET, 2.0)); assert(result.execution.status==OrderStatus::FILLED); assert(result.fills.size()==2); assert(result.fills[0].resting_client_order_id==40); assert(result.fills[1].resting_client_order_id==41); assert((engine.ask_order_ids(101.0)==std::vector<uint64_t>{42})); }
+void test_partial_fill_rests_remainder() { MatchingEngine engine; assert(engine.submit_order(order(50, Side::SELL, OrderType::LIMIT, 2.0, 101.0)).rested); auto result=engine.submit_order(order(51, Side::BUY, OrderType::LIMIT, 5.0, 101.0)); assert(result.execution.status==OrderStatus::PARTIALLY_FILLED); assert(result.rested); assert_near(result.execution.filled_quantity,2.0); assert_near(result.execution.remaining_quantity,3.0); assert(engine.ask_order_ids(101.0).empty()); assert((engine.bid_order_ids(101.0)==std::vector<uint64_t>{51})); assert_near(engine.bid_quantity(101.0),3.0); }
+void test_multi_level_fill() { MatchingEngine engine; assert(engine.submit_order(order(60, Side::SELL, OrderType::LIMIT, 1.0, 100.0)).rested); assert(engine.submit_order(order(61, Side::SELL, OrderType::LIMIT, 2.0, 101.0)).rested); assert(engine.submit_order(order(62, Side::SELL, OrderType::LIMIT, 3.0, 102.0)).rested); auto result=engine.submit_order(order(63, Side::BUY, OrderType::MARKET, 4.5)); assert(result.execution.status==OrderStatus::FILLED); assert(result.fills.size()==3); assert(result.fills[0].resting_client_order_id==60); assert(result.fills[1].resting_client_order_id==61); assert(result.fills[2].resting_client_order_id==62); assert_near(result.fills[0].quantity,1.0); assert_near(result.fills[1].quantity,2.0); assert_near(result.fills[2].quantity,1.5); assert_near(result.execution.avg_fill_price,((1.0*100.0)+(2.0*101.0)+(1.5*102.0))/4.5); assert_near(engine.ask_quantity(102.0),1.5); }
+
+void test_cancel_accepted_order() { MatchingEngine engine; assert(engine.submit_order(order(100, Side::BUY, OrderType::LIMIT, 1.0, 99.0)).rested); auto result=engine.cancel_order_report(100); assert(result.execution.status==OrderStatus::CANCELLED); assert(engine.bid_order_ids(99.0).empty()); assert(result.execution_reports.size() >= 2); }
+void test_modify_quantity_keeps_priority() { MatchingEngine engine; assert(engine.submit_order(order(110, Side::SELL, OrderType::LIMIT, 1.0, 101.0)).rested); assert(engine.submit_order(order(111, Side::SELL, OrderType::LIMIT, 1.0, 101.0)).rested); auto result=engine.modify_order(110, 2.0, 101.0); assert(result.execution.status==OrderStatus::ACCEPTED); assert((engine.ask_order_ids(101.0)==std::vector<uint64_t>{110,111})); assert_near(engine.ask_quantity(101.0),3.0); }
+void test_modify_price_loses_priority() { MatchingEngine engine; assert(engine.submit_order(order(120, Side::SELL, OrderType::LIMIT, 1.0, 101.0)).rested); assert(engine.submit_order(order(121, Side::SELL, OrderType::LIMIT, 1.0, 101.0)).rested); auto result=engine.modify_order(120, 1.0, 101.0 + 0.0); assert(result.execution.status==OrderStatus::ACCEPTED); result=engine.modify_order(120, 1.0, 102.0); assert(result.execution.status==OrderStatus::ACCEPTED); assert((engine.ask_order_ids(101.0)==std::vector<uint64_t>{121})); assert((engine.ask_order_ids(102.0)==std::vector<uint64_t>{120})); }
+void test_replace_cancels_old_and_creates_new() { MatchingEngine engine; assert(engine.submit_order(order(130, Side::BUY, OrderType::LIMIT, 1.0, 99.0)).rested); auto replacement=order(131, Side::BUY, OrderType::LIMIT, 2.0, 98.0); auto result=engine.replace_order(130, replacement); assert(result.execution.status==OrderStatus::ACCEPTED); assert(engine.bid_order_ids(99.0).empty()); assert((engine.bid_order_ids(98.0)==std::vector<uint64_t>{131})); }
+void test_ioc_partial_then_expires_remainder() { MatchingEngine engine; assert(engine.submit_order(order(140, Side::SELL, OrderType::LIMIT, 2.0, 101.0)).rested); auto req=order(141, Side::BUY, OrderType::LIMIT, 5.0, 101.0); req.time_in_force=TimeInForce::IOC; auto result=engine.submit_order(req); assert(result.execution.status==OrderStatus::EXPIRED); assert_near(result.execution.filled_quantity,2.0); assert_near(result.execution.remaining_quantity,3.0); assert(!result.rested); }
+void test_fok_rejects_if_full_fill_unavailable() { MatchingEngine engine; assert(engine.submit_order(order(150, Side::SELL, OrderType::LIMIT, 2.0, 101.0)).rested); auto req=order(151, Side::BUY, OrderType::LIMIT, 5.0, 101.0); req.time_in_force=TimeInForce::FOK; auto result=engine.submit_order(req); assert(result.execution.status==OrderStatus::REJECTED); assert(result.fills.empty()); assert_near(engine.ask_quantity(101.0),2.0); }
+void test_post_only_reject_if_crosses() { MatchingEngine engine; assert(engine.submit_order(order(160, Side::SELL, OrderType::LIMIT, 1.0, 101.0)).rested); auto req=order(161, Side::BUY, OrderType::LIMIT, 1.0, 101.0); req.post_only=true; auto result=engine.submit_order(req); assert(result.execution.status==OrderStatus::REJECTED); assert(result.fills.empty()); }
+void test_stop_trigger() { MatchingEngine engine; auto stop=order(170, Side::BUY, OrderType::STOP, 1.0); stop.stop_price=105.0; auto accepted=engine.submit_order(stop); assert(accepted.execution.status==OrderStatus::ACCEPTED); assert(engine.pending_stop_count()==1); auto triggered=engine.on_market_price("BTCUSDT",105.0); assert(triggered.size()==1); assert(triggered[0].triggered); assert(triggered[0].execution.status==OrderStatus::REJECTED); assert(engine.pending_stop_count()==0); }
+void test_stop_limit_trigger() { MatchingEngine engine; auto stop=order(180, Side::BUY, OrderType::STOP_LIMIT, 1.0, 106.0); stop.stop_price=105.0; auto accepted=engine.submit_order(stop); assert(accepted.execution.status==OrderStatus::ACCEPTED); auto triggered=engine.on_market_price("BTCUSDT",105.0); assert(triggered.size()==1); assert(triggered[0].triggered); assert(triggered[0].execution.status==OrderStatus::ACCEPTED); assert((engine.bid_order_ids(106.0)==std::vector<uint64_t>{180})); }
 }
-
-OrderRequest order(uint64_t id, Side side, OrderType type, double qty, double price = 0.0) {
-    OrderRequest req;
-    req.client_order_id = id;
-    req.symbol = "BTCUSDT";
-    req.side = side;
-    req.type = type;
-    req.quantity = qty;
-    req.limit_price = price;
-    return req;
-}
-
-void test_market_buy_hits_best_ask() {
-    MatchingEngine engine;
-    auto resting = engine.submit_order(order(1, Side::SELL, OrderType::LIMIT, 5.0, 101.0));
-    assert(resting.rested);
-
-    auto result = engine.submit_order(order(2, Side::BUY, OrderType::MARKET, 2.0));
-    assert(result.execution.status == OrderStatus::FILLED);
-    assert(result.fills.size() == 1);
-    assert(result.fills[0].resting_client_order_id == 1);
-    assert_near(result.fills[0].price, 101.0);
-    assert_near(result.execution.filled_quantity, 2.0);
-    assert_near(result.execution.avg_fill_price, 101.0);
-    assert_near(engine.ask_quantity(101.0), 3.0);
-}
-
-void test_market_sell_hits_best_bid() {
-    MatchingEngine engine;
-    assert(engine.submit_order(order(10, Side::BUY, OrderType::LIMIT, 4.0, 99.0)).rested);
-
-    auto result = engine.submit_order(order(11, Side::SELL, OrderType::MARKET, 1.5));
-    assert(result.execution.status == OrderStatus::FILLED);
-    assert(result.fills.size() == 1);
-    assert(result.fills[0].resting_client_order_id == 10);
-    assert_near(result.fills[0].price, 99.0);
-    assert_near(engine.bid_quantity(99.0), 2.5);
-}
-
-void test_limit_buy_crosses_ask() {
-    MatchingEngine engine;
-    assert(engine.submit_order(order(20, Side::SELL, OrderType::LIMIT, 3.0, 100.0)).rested);
-
-    auto result = engine.submit_order(order(21, Side::BUY, OrderType::LIMIT, 2.0, 100.5));
-    assert(result.execution.status == OrderStatus::FILLED);
-    assert(result.fills.size() == 1);
-    assert_near(result.fills[0].price, 100.0);
-    assert_near(engine.ask_quantity(100.0), 1.0);
-}
-
-void test_limit_sell_crosses_bid() {
-    MatchingEngine engine;
-    assert(engine.submit_order(order(30, Side::BUY, OrderType::LIMIT, 3.0, 100.0)).rested);
-
-    auto result = engine.submit_order(order(31, Side::SELL, OrderType::LIMIT, 2.0, 99.5));
-    assert(result.execution.status == OrderStatus::FILLED);
-    assert(result.fills.size() == 1);
-    assert_near(result.fills[0].price, 100.0);
-    assert_near(engine.bid_quantity(100.0), 1.0);
-}
-
-void test_fifo_priority() {
-    MatchingEngine engine;
-    assert(engine.submit_order(order(40, Side::SELL, OrderType::LIMIT, 1.0, 101.0)).rested);
-    assert(engine.submit_order(order(41, Side::SELL, OrderType::LIMIT, 1.0, 101.0)).rested);
-    assert(engine.submit_order(order(42, Side::SELL, OrderType::LIMIT, 1.0, 101.0)).rested);
-    assert((engine.ask_order_ids(101.0) == std::vector<uint64_t>{40, 41, 42}));
-
-    auto result = engine.submit_order(order(43, Side::BUY, OrderType::MARKET, 2.0));
-    assert(result.execution.status == OrderStatus::FILLED);
-    assert(result.fills.size() == 2);
-    assert(result.fills[0].resting_client_order_id == 40);
-    assert(result.fills[1].resting_client_order_id == 41);
-    assert((engine.ask_order_ids(101.0) == std::vector<uint64_t>{42}));
-}
-
-void test_partial_fill_rests_remainder() {
-    MatchingEngine engine;
-    assert(engine.submit_order(order(50, Side::SELL, OrderType::LIMIT, 2.0, 101.0)).rested);
-
-    auto result = engine.submit_order(order(51, Side::BUY, OrderType::LIMIT, 5.0, 101.0));
-    assert(result.execution.status == OrderStatus::PARTIALLY_FILLED);
-    assert(result.rested);
-    assert_near(result.execution.filled_quantity, 2.0);
-    assert_near(result.execution.remaining_quantity, 3.0);
-    assert(engine.ask_order_ids(101.0).empty());
-    assert((engine.bid_order_ids(101.0) == std::vector<uint64_t>{51}));
-    assert_near(engine.bid_quantity(101.0), 3.0);
-}
-
-void test_multi_level_fill() {
-    MatchingEngine engine;
-    assert(engine.submit_order(order(60, Side::SELL, OrderType::LIMIT, 1.0, 100.0)).rested);
-    assert(engine.submit_order(order(61, Side::SELL, OrderType::LIMIT, 2.0, 101.0)).rested);
-    assert(engine.submit_order(order(62, Side::SELL, OrderType::LIMIT, 3.0, 102.0)).rested);
-
-    auto result = engine.submit_order(order(63, Side::BUY, OrderType::MARKET, 4.5));
-    assert(result.execution.status == OrderStatus::FILLED);
-    assert(result.fills.size() == 3);
-    assert(result.fills[0].resting_client_order_id == 60);
-    assert(result.fills[1].resting_client_order_id == 61);
-    assert(result.fills[2].resting_client_order_id == 62);
-    assert_near(result.fills[0].quantity, 1.0);
-    assert_near(result.fills[1].quantity, 2.0);
-    assert_near(result.fills[2].quantity, 1.5);
-    assert_near(result.execution.avg_fill_price, ((1.0 * 100.0) + (2.0 * 101.0) + (1.5 * 102.0)) / 4.5);
-    assert_near(engine.ask_quantity(102.0), 1.5);
-}
-
-} // namespace
 
 int main() {
-    test_market_buy_hits_best_ask();
-    test_market_sell_hits_best_bid();
-    test_limit_buy_crosses_ask();
-    test_limit_sell_crosses_bid();
-    test_fifo_priority();
-    test_partial_fill_rests_remainder();
-    test_multi_level_fill();
+    test_market_buy_hits_best_ask(); test_market_sell_hits_best_bid(); test_limit_buy_crosses_ask(); test_limit_sell_crosses_bid(); test_fifo_priority(); test_partial_fill_rests_remainder(); test_multi_level_fill();
+    test_cancel_accepted_order(); test_modify_quantity_keeps_priority(); test_modify_price_loses_priority(); test_replace_cancels_old_and_creates_new(); test_ioc_partial_then_expires_remainder(); test_fok_rejects_if_full_fill_unavailable(); test_post_only_reject_if_crosses(); test_stop_trigger(); test_stop_limit_trigger();
     return 0;
 }
