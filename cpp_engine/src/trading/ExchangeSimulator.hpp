@@ -34,6 +34,18 @@ public:
         bool auction_accepts_orders = true;
     };
 
+    struct LatencySample {
+        uint64_t network_ns = 0;
+        uint64_t gateway_ns = 0;
+        uint64_t exchange_ns = 0;
+        uint64_t acknowledgement_ns = 0;
+        uint64_t queue_ns = 0;
+
+        uint64_t total_ns() const {
+            return network_ns + gateway_ns + exchange_ns + acknowledgement_ns + queue_ns;
+        }
+    };
+
     explicit ExchangeSimulator(Config cfg = {}) : cfg_(cfg), rng_(cfg.seed) {}
 
     MatchingEngine::MatchResult submit_order(const OrderRequest& request, double reference_mid_price, uint64_t receive_ts_ns = 0) {
@@ -56,7 +68,14 @@ public:
             return result;
         }
         if (state_ == SessionState::AUCTION) {
-            if (auction_hook_) return auction_hook_(request, reference_mid_price, receive_ts_ns);
+            if (auction_hook_) {
+                auto auction_result = auction_hook_(request, reference_mid_price, receive_ts_ns);
+                apply_execution_costs(auction_result.execution, request, reference_mid_price, 0);
+                for (auto& report : auction_result.execution_reports) {
+                    apply_execution_costs(report.execution, request, reference_mid_price, 0);
+                }
+                return auction_result;
+            }
             if (!cfg_.auction_accepts_orders) {
                 result.execution.message = "auction order handling unavailable";
                 stamp_latency(result.execution, 0);
@@ -64,7 +83,9 @@ public:
             }
         }
 
-        const uint64_t queue_depth = seed_synthetic_book(request, reference_mid_price, receive_ts_ns);
+        MatchingEngine synthetic_book;
+        const uint64_t queue_depth = seed_synthetic_book(synthetic_book, request, reference_mid_price, receive_ts_ns);
+
         auto routed = request;
         if (request.type == OrderType::MARKET) {
             routed.type = OrderType::LIMIT;
@@ -72,7 +93,7 @@ public:
             routed.limit_price = impacted_limit_price(request, reference_mid_price);
         }
 
-        result = engine_.submit_order(routed, receive_ts_ns);
+        result = synthetic_book.submit_order(routed, receive_ts_ns);
         apply_execution_costs(result.execution, request, reference_mid_price, queue_depth);
         for (auto& report : result.execution_reports) {
             apply_execution_costs(report.execution, request, reference_mid_price, queue_depth);
@@ -92,6 +113,7 @@ public:
     void set_auction_hook(AuctionHook hook) { auction_hook_ = std::move(hook); }
 
     const Config& config() const { return cfg_; }
+    const LatencySample& last_latency_sample() const { return last_latency_; }
 
 private:
     static constexpr double kEpsilon = 1e-12;
@@ -116,21 +138,26 @@ private:
         return dist(rng_);
     }
 
-    uint64_t synthetic_latency(uint64_t queue_depth) {
-        const uint64_t network = uniform_latency(cfg_.network_latency_min_ns, cfg_.network_latency_max_ns);
-        const uint64_t gateway = uniform_latency(cfg_.gateway_latency_min_ns, cfg_.gateway_latency_max_ns);
-        const uint64_t exchange = uniform_latency(cfg_.exchange_latency_min_ns, cfg_.exchange_latency_max_ns);
-        const uint64_t acknowledgement = uniform_latency(cfg_.acknowledgement_delay_min_ns, cfg_.acknowledgement_delay_max_ns);
-        const uint64_t queue_delay = queue_depth * cfg_.queue_delay_per_order_ns;
-        last_queue_delay_ns_ = queue_delay;
-        return network + gateway + exchange + acknowledgement + queue_delay;
+    LatencySample synthetic_latency(uint64_t queue_depth) {
+        LatencySample sample;
+        sample.network_ns = uniform_latency(cfg_.network_latency_min_ns, cfg_.network_latency_max_ns);
+        sample.gateway_ns = uniform_latency(cfg_.gateway_latency_min_ns, cfg_.gateway_latency_max_ns);
+        sample.exchange_ns = uniform_latency(cfg_.exchange_latency_min_ns, cfg_.exchange_latency_max_ns);
+        sample.acknowledgement_ns = uniform_latency(cfg_.acknowledgement_delay_min_ns, cfg_.acknowledgement_delay_max_ns);
+        sample.queue_ns = queue_depth * cfg_.queue_delay_per_order_ns;
+        last_latency_ = sample;
+        return sample;
     }
 
     void stamp_latency(OrderExecution& e, uint64_t queue_depth) {
-        const uint64_t total = synthetic_latency(queue_depth);
-        e.queue_delay_ns = last_queue_delay_ns_;
-        e.total_latency_ns = total;
-        e.ack_ts_ns = e.exchange_ts_ns + total;
+        const auto sample = synthetic_latency(queue_depth);
+        e.network_latency_ns = sample.network_ns;
+        e.gateway_latency_ns = sample.gateway_ns;
+        e.exchange_latency_ns = sample.exchange_ns;
+        e.acknowledgement_delay_ns = sample.acknowledgement_ns;
+        e.queue_delay_ns = sample.queue_ns;
+        e.total_latency_ns = sample.total_ns();
+        e.ack_ts_ns = e.exchange_ts_ns + e.total_latency_ns;
     }
 
     double side_adjusted_price(Side side, double mid, double spread_bps, double extra_bps) const {
@@ -148,26 +175,26 @@ private:
         return side_adjusted_price(request.side, mid, cfg_.bid_ask_spread_bps, extra_bps);
     }
 
-    uint64_t seed_synthetic_book(const OrderRequest& request, double mid, uint64_t ts_ns) {
+    uint64_t seed_synthetic_book(MatchingEngine& synthetic_book, const OrderRequest& request, double mid, uint64_t ts_ns) {
         const Side contra_side = request.side == Side::BUY ? Side::SELL : Side::BUY;
         const double first_extra = cfg_.slippage_bps + market_impact_bps(request);
         const double first_price = side_adjusted_price(request.side, mid, cfg_.bid_ask_spread_bps, first_extra);
         uint64_t levels = 0;
 
         if (cfg_.top_of_book_liquidity > kEpsilon) {
-            seed_liquidity(request.symbol, contra_side, cfg_.top_of_book_liquidity, first_price, ts_ns);
+            seed_liquidity(synthetic_book, request.symbol, contra_side, cfg_.top_of_book_liquidity, first_price, ts_ns);
             ++levels;
         }
         if (cfg_.second_level_liquidity > kEpsilon) {
             const double second_price = side_adjusted_price(request.side, mid, cfg_.bid_ask_spread_bps,
                                                             first_extra + cfg_.second_level_distance_bps);
-            seed_liquidity(request.symbol, contra_side, cfg_.second_level_liquidity, second_price, ts_ns);
+            seed_liquidity(synthetic_book, request.symbol, contra_side, cfg_.second_level_liquidity, second_price, ts_ns);
             ++levels;
         }
         return levels;
     }
 
-    void seed_liquidity(const std::string& symbol, Side side, double quantity, double price, uint64_t ts_ns) {
+    void seed_liquidity(MatchingEngine& synthetic_book, const std::string& symbol, Side side, double quantity, double price, uint64_t ts_ns) {
         OrderRequest liquidity;
         liquidity.client_order_id = next_liquidity_order_id_++;
         liquidity.symbol = symbol;
@@ -177,7 +204,7 @@ private:
         liquidity.quantity = quantity;
         liquidity.limit_price = price;
         liquidity.strategy_tag = "EXCHANGE_SIMULATOR_LIQUIDITY";
-        engine_.submit_order(liquidity, ts_ns);
+        synthetic_book.submit_order(liquidity, ts_ns);
     }
 
     void apply_execution_costs(OrderExecution& e, const OrderRequest& original, double reference_mid_price, uint64_t queue_depth) {
@@ -196,9 +223,8 @@ private:
 
     Config cfg_;
     SessionState state_ = SessionState::OPEN;
-    MatchingEngine engine_;
     std::mt19937_64 rng_;
     uint64_t next_liquidity_order_id_ = 800000000000ULL;
-    uint64_t last_queue_delay_ns_ = 0;
+    LatencySample last_latency_;
     AuctionHook auction_hook_;
 };
