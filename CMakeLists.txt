@@ -96,6 +96,7 @@ if(LIVE_ENGINE_AVAILABLE)
         cpp_engine/src/prism_live_engine.cpp
         cpp_engine/src/prism_strategy.cpp
         cpp_engine/src/connectors/BinanceClient.cpp
+        cpp_engine/src/raw_market_queue.cpp
     )
 
     target_include_directories(prism_live_paper_trading PRIVATE
