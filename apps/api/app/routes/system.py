@@ -109,10 +109,23 @@ def advance_onboarding(step: str, user=Depends(current_user)):
         completed = json.loads(existing.get("completed_steps_json", "[]"))
         if step not in completed:
             completed.append(step)
-        conn.execute(
-            f"INSERT OR REPLACE INTO onboarding_state(user_id,step,completed_steps_json,updated_at) VALUES({p},{p},{p},{p})",
-            (user["id"], step, json.dumps(completed), now())
-        )
+        if settings.is_postgres():
+            conn.execute(
+                """
+                INSERT INTO onboarding_state(user_id,step,completed_steps_json,updated_at)
+                VALUES(%s,%s,%s,%s)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    step=EXCLUDED.step,
+                    completed_steps_json=EXCLUDED.completed_steps_json,
+                    updated_at=EXCLUDED.updated_at
+                """,
+                (user["id"], step, json.dumps(completed), now())
+            )
+        else:
+            conn.execute(
+                f"INSERT OR REPLACE INTO onboarding_state(user_id,step,completed_steps_json,updated_at) VALUES({p},{p},{p},{p})",
+                (user["id"], step, json.dumps(completed), now())
+            )
         if step == "complete":
             conn.execute(
                 f"UPDATE users SET onboarding_completed=1 WHERE id={p}", (user["id"],)
