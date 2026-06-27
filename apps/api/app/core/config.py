@@ -1,7 +1,7 @@
 """QuantOS configuration.
 
 Loads environment variables from the repository .env file when present and keeps
-safe local defaults while making production misconfiguration visible in logs.
+safe local defaults while failing fast on unsafe production authentication secrets.
 """
 from __future__ import annotations
 
@@ -27,6 +27,12 @@ def _as_int(name: str, default: int) -> int:
 
 class Settings:
     """Small dependency-free settings loader used by API, worker, and tests."""
+
+    _INSECURE_SECRET_VALUES = {
+        "dev-insecure-default-key-change-in-prod",
+        "change-this-before-public-deploy",
+    }
+    _MIN_PRODUCTION_SECRET_LENGTH = 32
 
     def __init__(self):
         self.project_root: Path = Path(__file__).resolve().parents[4]
@@ -65,9 +71,20 @@ class Settings:
         self.using_insecure_secret = False
         if not self.secret_key:
             self.using_insecure_secret = True
+            if self.is_prod:
+                raise RuntimeError(
+                    "PRISMFLOW_SECRET_KEY is required when ENV=production. "
+                    "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(64))\""
+                )
             self.secret_key = "dev-" + secrets.token_urlsafe(48)
-        if self.secret_key in {"dev-insecure-default-key-change-in-prod", "change-this-before-public-deploy"}:
+        if self.secret_key in self._INSECURE_SECRET_VALUES or len(self.secret_key) < self._MIN_PRODUCTION_SECRET_LENGTH:
             self.using_insecure_secret = True
+            if self.is_prod:
+                raise RuntimeError(
+                    "PRISMFLOW_SECRET_KEY is insecure for production. "
+                    "Use a stable random secret of at least 32 characters. "
+                    "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(64))\""
+                )
         self.session_ttl_seconds = _as_int("SESSION_TTL_SECONDS", 900)
         self.refresh_ttl_seconds = _as_int("REFRESH_TTL_SECONDS", 2592000)
         self.access_token_ttl_seconds = _as_int("ACCESS_TOKEN_TTL_SECONDS", self.session_ttl_seconds)
