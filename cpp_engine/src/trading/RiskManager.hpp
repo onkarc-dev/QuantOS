@@ -1,5 +1,6 @@
 #pragma once
 #include "OrderTypes.hpp"
+#include "../storage/EventStore.hpp"
 #include <algorithm>
 #include <cmath>
 #include <string>
@@ -23,33 +24,52 @@ struct RiskDecision {
 
 class RiskManager {
 public:
-    explicit RiskManager(RiskConfig cfg = {}) : cfg_(cfg), equity_(cfg.starting_equity) {}
+    explicit RiskManager(RiskConfig cfg = {}, EventStore* store = nullptr)
+        : cfg_(cfg), equity_(cfg.starting_equity), store_(store) {}
+
+    void set_event_store(EventStore* store) { store_ = store; }
 
     RiskDecision validate(const OrderRequest& order, double reference_price,
                           const std::unordered_map<std::string, Position>& positions) {
-        if (order.quantity <= 0.0) return {false, "quantity must be positive", 0.0};
-        if (reference_price <= 0.0) return {false, "reference price invalid", 0.0};
-        if (daily_realized_pnl_ <= -std::abs(cfg_.max_daily_loss)) return {false, "daily loss limit reached", 0.0};
-        if (orders_this_minute_ >= cfg_.max_orders_per_minute) return {false, "orders per minute limit reached", 0.0};
+        if (order.quantity <= 0.0) return publish(order, {false, "quantity must be positive", 0.0});
+        if (reference_price <= 0.0) return publish(order, {false, "reference price invalid", 0.0});
+        if (daily_realized_pnl_ <= -std::abs(cfg_.max_daily_loss)) return publish(order, {false, "daily loss limit reached", 0.0});
+        if (orders_this_minute_ >= cfg_.max_orders_per_minute) return publish(order, {false, "orders per minute limit reached", 0.0});
 
+        const double current_qty = position_quantity(order.symbol, positions);
+        const double signed_order_qty = signed_quantity(order.side, order.quantity);
+        const double projected_qty = current_qty + signed_order_qty;
         const double order_notional = std::abs(order.quantity * reference_price);
-        if (order_notional > cfg_.max_symbol_notional) return {false, "symbol notional limit exceeded", order_notional};
+        const double projected_symbol_notional = std::abs(projected_qty * reference_price);
 
-        double gross = order_notional;
-        int open_positions = 0;
-        for (const auto& kv : positions) {
-            const auto& p = kv.second;
-            if (std::abs(p.quantity) > 1e-12) {
-                ++open_positions;
-                gross += std::abs(p.quantity * reference_price);
+        if (order.reduce_only) {
+            if (is_flat(current_qty)) {
+                return publish(order, {false, "reduce-only requires existing position", order_notional});
+            }
+            if (same_direction(current_qty, signed_order_qty)) {
+                return publish(order, {false, "reduce-only cannot increase position", order_notional});
+            }
+            if (std::abs(signed_order_qty) > std::abs(current_qty) + kEps) {
+                return publish(order, {false, "reduce-only cannot flip position", order_notional});
             }
         }
-        if (gross > cfg_.max_gross_notional) return {false, "gross notional limit exceeded", order_notional};
-        if (open_positions >= cfg_.max_open_positions && positions.find(order.symbol) == positions.end()) {
-            return {false, "max open positions reached", order_notional};
+
+        if (projected_symbol_notional > cfg_.max_symbol_notional + kEps) {
+            return publish(order, {false, "symbol notional limit exceeded", projected_symbol_notional});
         }
+
+        const double projected_gross = gross_notional_after(order.symbol, projected_qty, reference_price, positions);
+        if (projected_gross > cfg_.max_gross_notional + kEps) {
+            return publish(order, {false, "gross notional limit exceeded", projected_gross});
+        }
+
+        const bool opens_new_position = is_flat(current_qty) && !is_flat(projected_qty);
+        if (opens_new_position && open_position_count(positions) >= cfg_.max_open_positions) {
+            return publish(order, {false, "max open positions reached", order_notional});
+        }
+
         ++orders_this_minute_;
-        return {true, "approved", order_notional};
+        return publish(order, {true, "approved", order_notional});
     }
 
     void reset_rate_window() { orders_this_minute_ = 0; }
@@ -61,8 +81,51 @@ public:
     const RiskConfig& config() const { return cfg_; }
 
 private:
+    static constexpr double kEps = 1e-12;
+
+    static bool is_flat(double qty) { return std::abs(qty) <= kEps; }
+
+    static double signed_quantity(Side side, double quantity) {
+        return (side == Side::BUY ? 1.0 : -1.0) * quantity;
+    }
+
+    static bool same_direction(double a, double b) {
+        return (a > 0.0 && b > 0.0) || (a < 0.0 && b < 0.0);
+    }
+
+    static double position_quantity(const std::string& symbol,
+                                    const std::unordered_map<std::string, Position>& positions) {
+        const auto it = positions.find(symbol);
+        return it == positions.end() ? 0.0 : it->second.quantity;
+    }
+
+    static int open_position_count(const std::unordered_map<std::string, Position>& positions) {
+        int count = 0;
+        for (const auto& kv : positions) {
+            if (!is_flat(kv.second.quantity)) ++count;
+        }
+        return count;
+    }
+
+    static double gross_notional_after(const std::string& order_symbol, double projected_order_qty,
+                                       double reference_price,
+                                       const std::unordered_map<std::string, Position>& positions) {
+        double gross = std::abs(projected_order_qty * reference_price);
+        for (const auto& kv : positions) {
+            if (kv.first == order_symbol) continue;
+            gross += std::abs(kv.second.quantity * reference_price);
+        }
+        return gross;
+    }
+
+    RiskDecision publish(const OrderRequest& order, RiskDecision decision) const {
+        if (store_) store_->risk_decision(order.symbol, decision.approved, decision.reason, decision.notional);
+        return decision;
+    }
+
     RiskConfig cfg_;
     double equity_ = 0.0;
     double daily_realized_pnl_ = 0.0;
     int orders_this_minute_ = 0;
+    EventStore* store_ = nullptr;
 };
