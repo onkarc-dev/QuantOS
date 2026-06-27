@@ -1,88 +1,116 @@
-"""PRISMFlow configuration — supports both SQLite (local) and PostgreSQL (production).
+"""QuantOS configuration.
 
-Priority order:
-1. Explicit environment variables / .env file
-2. DATABASE_URL for db (postgres:// prefix = PostgreSQL, else SQLite)
-3. Safe defaults for local demo
+Loads environment variables from the repository .env file when present and keeps
+safe local defaults while making production misconfiguration visible in logs.
 """
 from __future__ import annotations
 
 import os
+import secrets
 import sys
 from pathlib import Path
-from typing import Optional
+
+
+def _as_bool(value: str, default: bool = False) -> bool:
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _as_int(name: str, default: int) -> int:
+    raw = os.getenv(name, str(default))
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
 
 
 class Settings:
-    """Simple settings loader — no pydantic-settings required, works offline."""
+    """Small dependency-free settings loader used by API, worker, and tests."""
 
     def __init__(self):
-        # Load .env if python-dotenv available (optional)
+        self.project_root: Path = Path(__file__).resolve().parents[4]
+        self.api_root: Path = Path(__file__).resolve().parents[2]
+
         try:
             from dotenv import load_dotenv
-            env_path = Path(__file__).resolve().parents[4] / ".env"
+            env_path = self.project_root / ".env"
             if env_path.exists():
                 load_dotenv(env_path)
         except ImportError:
             pass
 
-        self.project_root: Path = Path(__file__).resolve().parents[4]
-        self.api_root: Path = Path(__file__).resolve().parents[2]
+        self.env: str = os.getenv("ENV", os.getenv("NODE_ENV", "development")).lower()
+        self.is_prod: bool = self.env in {"production", "prod"}
 
         # Database
-        raw_db_url = os.getenv("DATABASE_URL", "")
+        raw_db_url = os.getenv("DATABASE_URL", "").strip()
         if raw_db_url.startswith("postgres"):
-            self.database_url: str = raw_db_url
-            self.db_backend: str = "postgresql"
+            self.database_url = raw_db_url
+            self.db_backend = "postgresql"
+        elif raw_db_url.startswith("sqlite:///"):
+            self.database_url = raw_db_url
+            self.database_path = raw_db_url.replace("sqlite:///", "", 1)
+            self.db_backend = "sqlite"
         else:
-            self.database_path: str = os.getenv("DATABASE_PATH", "prismflow.db")
+            self.database_path = os.getenv("DATABASE_PATH", "prismflow.db")
             self.database_url = f"sqlite:///{self.api_root / self.database_path}"
             self.db_backend = "sqlite"
 
         # Redis / queue
-        self.redis_url: str = os.getenv("REDIS_URL", "")
+        self.redis_url: str = os.getenv("REDIS_URL", "").strip()
 
         # Auth
-        self.secret_key: str = os.getenv("PRISMFLOW_SECRET_KEY", "dev-insecure-default-key-change-in-prod")
-        self.session_ttl_seconds: int = int(os.getenv("SESSION_TTL_SECONDS", "900"))
-        self.refresh_ttl_seconds: int = int(os.getenv("REFRESH_TTL_SECONDS", "2592000"))
-        self.access_token_ttl_seconds: int = int(os.getenv("ACCESS_TOKEN_TTL_SECONDS", str(self.session_ttl_seconds)))
+        self.secret_key: str = os.getenv("PRISMFLOW_SECRET_KEY", "").strip()
+        self.using_insecure_secret = False
+        if not self.secret_key:
+            self.using_insecure_secret = True
+            self.secret_key = "dev-" + secrets.token_urlsafe(48)
+        if self.secret_key in {"dev-insecure-default-key-change-in-prod", "change-this-before-public-deploy"}:
+            self.using_insecure_secret = True
+        self.session_ttl_seconds = _as_int("SESSION_TTL_SECONDS", 900)
+        self.refresh_ttl_seconds = _as_int("REFRESH_TTL_SECONDS", 2592000)
+        self.access_token_ttl_seconds = _as_int("ACCESS_TOKEN_TTL_SECONDS", self.session_ttl_seconds)
 
-        # Email / OTP. In production set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM.
-        self.smtp_host: str = os.getenv("SMTP_HOST", "")
-        self.smtp_port: int = int(os.getenv("SMTP_PORT", "587"))
-        self.smtp_user: str = os.getenv("SMTP_USER", "")
-        self.smtp_password: str = os.getenv("SMTP_PASSWORD", "")
-        self.smtp_from: str = os.getenv("SMTP_FROM", self.smtp_user or "no-reply@quantos.local")
-        self.smtp_tls: bool = os.getenv("SMTP_TLS", "true").lower() not in {"0", "false", "no"}
-        env_name = os.getenv("ENV", os.getenv("NODE_ENV", "development")).lower()
-        otp_default = "false" if env_name in {"production", "prod"} else "true"
-        self.email_otp_dev_return: bool = os.getenv("EMAIL_OTP_DEV_RETURN", otp_default).lower() in {"1", "true", "yes"}
+        # Email / OTP
+        self.smtp_host = os.getenv("SMTP_HOST", "").strip()
+        self.smtp_port = _as_int("SMTP_PORT", 587)
+        self.smtp_user = os.getenv("SMTP_USER", "").strip()
+        self.smtp_password = os.getenv("SMTP_PASSWORD", "")
+        self.smtp_from = os.getenv("SMTP_FROM", self.smtp_user or "no-reply@quantos.local").strip()
+        self.smtp_tls = _as_bool(os.getenv("SMTP_TLS", "true"), True)
+        otp_default = "false" if self.is_prod else "true"
+        self.email_otp_dev_return = _as_bool(os.getenv("EMAIL_OTP_DEV_RETURN", otp_default), not self.is_prod)
 
-        # Outputs
-        self.outputs_root: str = os.getenv("OUTPUTS_ROOT", "outputs")
+        # Outputs / logs
+        self.outputs_root = os.getenv("OUTPUTS_ROOT", "outputs")
+        self.log_file = os.getenv("LOG_FILE", str(self.outputs_dir / "quantos_api.log"))
 
-        # Product safety — ALWAYS paper/backtest only
-        self.safe_mode: bool = True
-        self.real_money_enabled: bool = False
-        self.broker_integration_enabled: bool = False
+        # Product safety — intentionally immutable at runtime.
+        self.safe_mode = True
+        self.real_money_enabled = False
+        self.broker_integration_enabled = False
 
         # Server
-        self.api_host: str = os.getenv("API_HOST", "127.0.0.1")
-        self.api_port: int = int(os.getenv("API_PORT", "8000"))
+        self.api_host = os.getenv("API_HOST", "127.0.0.1")
+        self.api_port = _as_int("API_PORT", 8000)
 
         # CORS
         cors_raw = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
-        self.cors_origins: list[str] = [o.strip() for o in cors_raw.split(",") if o.strip()]
+        self.cors_origins = [o.strip().rstrip("/") for o in cors_raw.split(",") if o.strip()]
+        self.cors_all_enabled = "*" in self.cors_origins
 
         # Production hardening
-        self.enforce_https: bool = os.getenv("ENFORCE_HTTPS", "false").lower() in {"1", "true", "yes"}
-        self.log_file: str = os.getenv("LOG_FILE", str(self.api_root / "quantos_api.log"))
+        self.enforce_https = _as_bool(os.getenv("ENFORCE_HTTPS", "false"), False)
+
+        # Runtime dirs should exist before logging or job creation.
+        self.outputs_dir.mkdir(parents=True, exist_ok=True)
+        Path(self.log_file).parent.mkdir(parents=True, exist_ok=True)
 
     @property
     def db_file(self) -> Path:
-        """SQLite file path — only meaningful when db_backend == 'sqlite'."""
-        return self.api_root / getattr(self, "database_path", "prismflow.db")
+        p = Path(getattr(self, "database_path", "prismflow.db"))
+        return p if p.is_absolute() else self.api_root / p
 
     @property
     def outputs_dir(self) -> Path:
@@ -91,16 +119,33 @@ class Settings:
 
     @property
     def engine_binary(self) -> Path:
-        override = os.getenv("ENGINE_BINARY_PATH", "")
+        override = os.getenv("ENGINE_BINARY_PATH", "").strip()
         if override:
-            return Path(override)
+            p = Path(override)
+            return p if p.is_absolute() else self.project_root / p
+        candidates = []
         if sys.platform.startswith("win"):
-            return self.project_root / "build" / "Release" / "prism_backtest.exe"
-        # Try build_fresh first, then build
-        fresh = self.project_root / "build_fresh" / "prism_backtest"
-        if fresh.exists():
-            return fresh
-        return self.project_root / "build" / "prism_backtest"
+            candidates.extend([
+                self.project_root / "build" / "Release" / "prism_backtest.exe",
+                self.project_root / "build" / "prism_backtest.exe",
+            ])
+        else:
+            candidates.extend([
+                self.project_root / "build" / "Release" / "prism_backtest",
+                self.project_root / "build" / "prism_backtest",
+                self.project_root / "build_fresh" / "prism_backtest",
+            ])
+        return next((p for p in candidates if p.exists()), candidates[0])
+
+    @property
+    def live_paper_binary(self) -> Path:
+        override = os.getenv("LIVE_PAPER_BINARY_PATH", "").strip()
+        if override:
+            p = Path(override)
+            return p if p.is_absolute() else self.project_root / p
+        if sys.platform.startswith("win"):
+            return self.project_root / "build" / "Release" / "prism_live_paper_trading.exe"
+        return self.project_root / "build" / "Release" / "prism_live_paper_trading"
 
     def is_postgres(self) -> bool:
         return self.db_backend == "postgresql"
@@ -108,12 +153,24 @@ class Settings:
     def has_redis(self) -> bool:
         return bool(self.redis_url)
 
+    def production_warnings(self) -> list[str]:
+        warnings: list[str] = []
+        if self.is_prod and self.db_backend != "postgresql":
+            warnings.append("DATABASE_URL is not PostgreSQL; use Postgres for public production.")
+        if self.is_prod and self.using_insecure_secret:
+            warnings.append("PRISMFLOW_SECRET_KEY is missing or insecure.")
+        if self.is_prod and self.email_otp_dev_return:
+            warnings.append("EMAIL_OTP_DEV_RETURN must be false in production.")
+        if self.is_prod and not self.smtp_host:
+            warnings.append("SMTP_HOST is not configured; OTP email delivery will fail.")
+        if self.is_prod and self.cors_all_enabled:
+            warnings.append("CORS_ORIGINS contains '*'; restrict it to your frontend domain.")
+        if self.is_prod and not self.enforce_https:
+            warnings.append("ENFORCE_HTTPS is false; enable it behind a HTTPS proxy for public launch.")
+        return warnings
+
     def __repr__(self) -> str:
-        return (
-            f"Settings(db_backend={self.db_backend}, "
-            f"has_redis={self.has_redis()}, "
-            f"safe_mode={self.safe_mode})"
-        )
+        return f"Settings(env={self.env}, db_backend={self.db_backend}, has_redis={self.has_redis()}, safe_mode={self.safe_mode})"
 
 
 settings = Settings()
