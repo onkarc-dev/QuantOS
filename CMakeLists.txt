@@ -43,6 +43,16 @@ target_include_directories(paper_broker_tests PRIVATE
 
 add_test(NAME paper_broker_tests COMMAND paper_broker_tests)
 
+add_executable(exchange_simulator_tests
+    tests/exchange_simulator_tests.cpp
+)
+
+target_include_directories(exchange_simulator_tests PRIVATE
+    cpp_engine/src
+)
+
+add_test(NAME exchange_simulator_tests COMMAND exchange_simulator_tests)
+
 add_executable(benchmark_engine
     cpp_engine/benchmarks/benchmark_engine.cpp
 )
