@@ -98,6 +98,42 @@ def _update_job(job_id: str, **kwargs):
         conn.commit()
 
 
+def _start_job(job_id: str, user_id: str, strategy_id: str, mode: str, symbols: list[str], timeframe: str, output_dir: Path) -> None:
+    """Transition an existing queued job to running, or insert a running row for legacy callers."""
+    p = _p()
+    with get_conn() as conn:
+        row = conn.execute(f"SELECT id FROM jobs WHERE id={p}", (job_id,)).fetchone()
+        if row:
+            conn.execute(
+                f"UPDATE jobs SET status={p}, output_dir={p}, started_at={p}, stdout={p}, stderr={p}, error_message={p} WHERE id={p}",
+                ("running", str(output_dir), now(), None, None, None, job_id),
+            )
+        else:
+            conn.execute(
+                f"INSERT INTO jobs(id,user_id,strategy_id,mode,status,symbols_json,timeframe,output_dir,created_at,started_at) VALUES({p},{p},{p},{p},{p},{p},{p},{p},{p},{p})",
+                (job_id, user_id, strategy_id, mode, "running", json.dumps(symbols), timeframe, str(output_dir), now(), now()),
+            )
+        conn.commit()
+
+
+def _fail_job_before_start(job_id: str, user_id: str, strategy_id: str, mode: str, symbols: list[str], timeframe: str, output_dir: Path, error_message: str) -> None:
+    """Mark an existing queued job failed, or insert a failed row for legacy callers."""
+    p = _p()
+    with get_conn() as conn:
+        row = conn.execute(f"SELECT id FROM jobs WHERE id={p}", (job_id,)).fetchone()
+        if row:
+            conn.execute(
+                f"UPDATE jobs SET status={p}, output_dir={p}, started_at={p}, completed_at={p}, error_message={p} WHERE id={p}",
+                ("failed", str(output_dir), now(), now(), error_message, job_id),
+            )
+        else:
+            conn.execute(
+                f"INSERT INTO jobs(id,user_id,strategy_id,mode,status,symbols_json,timeframe,output_dir,created_at,started_at,completed_at,error_message) VALUES({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})",
+                (job_id, user_id, strategy_id, mode, "failed", json.dumps(symbols), timeframe, str(output_dir), now(), now(), now(), error_message),
+            )
+        conn.commit()
+
+
 def insert_outputs(job_payload: Dict[str, Any], job_id: str, output_dir: Path):
     """Parse C++ output files and persist into database."""
     symbol = (job_payload.get("symbols") or ["BTCUSDT"])[0]
@@ -200,29 +236,19 @@ def run_engine_sync(job_payload: Dict[str, Any]) -> Dict[str, Any]:
     config_path = write_config(job_payload, job_id, output_dir)
 
     if mode == "backtest" and job_payload.get("market_data_error"):
-        # Create a failed job record so the frontend can show the exact data error.
-        with get_conn() as conn:
-            conn.execute(
-                "INSERT INTO jobs(id,user_id,strategy_id,mode,status,symbols_json,timeframe,output_dir,created_at,started_at,completed_at,error_message) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                (job_id, user_id, strategy_id, mode, "failed", json.dumps(symbols), timeframe, str(output_dir), now(), now(), now(), "Real Binance data fetch failed: " + job_payload.get("market_data_error", "unknown"))
-            )
-            conn.commit()
+        # Create or update a failed job record so the frontend can show the exact data error.
+        error_message = "Real Binance data fetch failed: " + job_payload.get("market_data_error", "unknown")
+        _fail_job_before_start(job_id, user_id, strategy_id, mode, symbols, timeframe, output_dir, error_message)
         return {
             "job_id": job_id,
             "status": "failed",
             "output_dir": str(output_dir),
-            "error": "Real Binance data fetch failed: " + job_payload.get("market_data_error", "unknown"),
+            "error": error_message,
             "error_category": "market_data_fetch_failed",
             "synthetic_data_used": False,
         }
 
-    # Insert job record
-    with get_conn() as conn:
-        conn.execute(
-            "INSERT INTO jobs(id,user_id,strategy_id,mode,status,symbols_json,timeframe,output_dir,created_at,started_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
-            (job_id, user_id, strategy_id, mode, "running", json.dumps(symbols), timeframe, str(output_dir), now(), now())
-        )
-        conn.commit()
+    _start_job(job_id, user_id, strategy_id, mode, symbols, timeframe, output_dir)
 
     engine = settings.engine_binary
 
