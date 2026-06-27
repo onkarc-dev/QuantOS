@@ -47,6 +47,10 @@ class EngineError(RuntimeError):
         self.category = category
 
 
+def _p() -> str:
+    return "%s" if settings.is_postgres() else "?"
+
+
 def create_job_folder(user_id: str, job_id: str) -> Path:
     out = settings.outputs_dir / user_id / job_id
     out.mkdir(parents=True, exist_ok=True)
@@ -86,12 +90,11 @@ def _update_job(job_id: str, **kwargs):
     """Update job record with keyword arguments."""
     if not kwargs:
         return
-    cols = ", ".join(f"{k}=?" for k in kwargs)
+    p = _p()
+    cols = ", ".join(f"{k}={p}" for k in kwargs)
     vals = list(kwargs.values()) + [job_id]
-    if settings.is_postgres():
-        cols = ", ".join(f"{k}=%s" for k in kwargs)
     with get_conn() as conn:
-        conn.execute(f"UPDATE jobs SET {cols} WHERE id=?", vals)
+        conn.execute(f"UPDATE jobs SET {cols} WHERE id={p}", vals)
         conn.commit()
 
 
@@ -102,9 +105,10 @@ def insert_outputs(job_payload: Dict[str, Any], job_id: str, output_dir: Path):
     summary = read_json(output_dir / "backtest_summary.json")
     validation = read_json(output_dir / "setup_validation_report.json")
     snapshot = read_json(output_dir / "dashboard_snapshot.json")
+    p = _p()
 
     with get_conn() as conn:
-        conn.execute("DELETE FROM trades WHERE job_id=?", (job_id,))
+        conn.execute(f"DELETE FROM trades WHERE job_id={p}", (job_id,))
         for row in trades:
             r = row.get("r_multiple") or row.get("R_multiple") or 0
             try:
@@ -112,13 +116,31 @@ def insert_outputs(job_payload: Dict[str, Any], job_id: str, output_dir: Path):
             except Exception:
                 rv = 0.0
             conn.execute(
-                "INSERT INTO trades(id,job_id,user_id,strategy_id,symbol,trade_json,r_multiple,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                f"INSERT INTO trades(id,job_id,user_id,strategy_id,symbol,trade_json,r_multiple,created_at) VALUES({p},{p},{p},{p},{p},{p},{p},{p})",
                 (str(uuid.uuid4()), job_id, job_payload["user_id"], job_payload["strategy_id"], symbol, json.dumps(row), rv, now())
             )
-        conn.execute(
-            "INSERT OR REPLACE INTO reports(id,job_id,user_id,summary_json,validation_json,dashboard_snapshot_json,created_at) VALUES(?,?,?,?,?,?,?)",
-            (str(uuid.uuid4()), job_id, job_payload["user_id"], json.dumps(summary), json.dumps(validation), json.dumps(snapshot), now())
-        )
+        report_id = str(uuid.uuid4())
+        report_values = (report_id, job_id, job_payload["user_id"], json.dumps(summary), json.dumps(validation), json.dumps(snapshot), now())
+        if settings.is_postgres():
+            conn.execute(
+                """
+                INSERT INTO reports(id,job_id,user_id,summary_json,validation_json,dashboard_snapshot_json,created_at)
+                VALUES(%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT(id) DO UPDATE SET
+                    job_id=EXCLUDED.job_id,
+                    user_id=EXCLUDED.user_id,
+                    summary_json=EXCLUDED.summary_json,
+                    validation_json=EXCLUDED.validation_json,
+                    dashboard_snapshot_json=EXCLUDED.dashboard_snapshot_json,
+                    created_at=EXCLUDED.created_at
+                """,
+                report_values
+            )
+        else:
+            conn.execute(
+                "INSERT OR REPLACE INTO reports(id,job_id,user_id,summary_json,validation_json,dashboard_snapshot_json,created_at) VALUES(?,?,?,?,?,?,?)",
+                report_values
+            )
         conn.commit()
 
 
