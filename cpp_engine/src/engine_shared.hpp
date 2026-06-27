@@ -16,7 +16,7 @@
   #endif
 #endif
 
-// Parsed trade consumed by the PRISM engine.
+// Parsed trade consumed by the existing PRISM candle/strategy engine.
 struct TradePacket {
     double price = 0.0;
     double volume = 0.0;
@@ -26,13 +26,22 @@ struct TradePacket {
     uint64_t trade_id = 0;
 };
 
-// Raw websocket payload. Keeping this small and fixed-size avoids heap
-// allocation inside the websocket callback. Binance @trade messages are
-// normally far below 512 bytes.
+// Raw websocket trade payload. Keeping this fixed-size avoids heap allocation
+// inside the websocket callback. Binance @trade messages are normally tiny;
+// combined-stream wrappers are still below this limit.
 struct RawTradeMessage {
     uint16_t len = 0;
     uint64_t ingest_ts_ns = 0;
-    char data[512]{};
+    char data[1024]{};
+};
+
+// Raw exchange market-data payload for L2/L3 reconstruction. Depth messages are
+// intentionally routed separately from trades so the old PRISM candle pipeline
+// stays backward compatible.
+struct RawMarketMessage {
+    uint16_t len = 0;
+    uint64_t ingest_ts_ns = 0;
+    char data[8192]{};
 };
 
 template<typename T, std::size_t Capacity>
@@ -87,10 +96,12 @@ public:
     }
 };
 
-// Raw queue is intentionally larger because websocket input is bursty.
+// Raw queues are intentionally large because websocket input is bursty.
 using RawTradeQueue = SimpleSPSCQueue<RawTradeMessage, 1 << 20>;
 using TradeQueue = SimpleSPSCQueue<TradePacket, 1 << 22>;
+using RawMarketQueue = SimpleSPSCQueue<RawMarketMessage, 1 << 18>;
 
 extern RawTradeQueue raw_trade_queue;
 extern TradeQueue trade_queue;
+extern RawMarketQueue raw_market_queue;
 extern std::atomic<bool> running;
