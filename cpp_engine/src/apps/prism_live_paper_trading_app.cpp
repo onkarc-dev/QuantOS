@@ -84,6 +84,7 @@ struct Args {
     bool force_demo_signal = false;
     bool managed_run = false;
     std::string config_path;
+    std::string output_dir;
 };
 
 Args parse_args(int argc, char** argv) {
@@ -95,6 +96,7 @@ Args parse_args(int argc, char** argv) {
         else if (x == "--bar-seconds" && i + 1 < argc) a.bar_seconds = std::max(1, std::stoi(argv[++i]));
         else if (x == "--snapshot-ms" && i + 1 < argc) a.snapshot_ms = std::max(100, std::stoi(argv[++i]));
         else if (x == "--config" && i + 1 < argc) a.config_path = argv[++i];
+        else if (x == "--output-dir" && i + 1 < argc) a.output_dir = argv[++i];
         else if (x == "--managed-run") a.managed_run = true;
         else if (x == "--force-demo-signal") a.force_demo_signal = true;
     }
@@ -354,7 +356,9 @@ int main(int argc, char** argv) {
     }
     std::transform(args.symbol.begin(), args.symbol.end(), args.symbol.begin(), [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
 
-    const std::string out_dir = "outputs/prismflow_cpp_heavy";
+    std::string out_dir = args.output_dir;
+    if (out_dir.empty()) out_dir = prism_config.output_dir;
+    if (out_dir.empty()) out_dir = "outputs/prismflow_cpp_heavy";
     std::filesystem::create_directories(out_dir);
 
     EventStore store(out_dir + "/events.jsonl");
