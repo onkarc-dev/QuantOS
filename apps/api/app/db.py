@@ -243,6 +243,19 @@ CREATE TABLE IF NOT EXISTS live_trades (
     trade_json TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user_id ON refresh_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_strategies_user_id ON strategies(user_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs(user_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
+CREATE INDEX IF NOT EXISTS idx_jobs_user_status ON jobs(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_reports_user_id ON reports(user_id);
+CREATE INDEX IF NOT EXISTS idx_reports_job_id ON reports(job_id);
+CREATE INDEX IF NOT EXISTS idx_trades_job_id ON trades(job_id);
+CREATE INDEX IF NOT EXISTS idx_trades_user_id ON trades(user_id);
+CREATE INDEX IF NOT EXISTS idx_journal_entries_user_id ON journal_entries(user_id);
+CREATE INDEX IF NOT EXISTS idx_live_trades_user_id ON live_trades(user_id);
+CREATE INDEX IF NOT EXISTS idx_live_trades_session_id ON live_trades(session_id);
 """
 
 _POSTGRES_DDL = _SQLITE_DDL.replace("REAL DEFAULT", "DOUBLE PRECISION DEFAULT").replace("REAL NOT NULL", "DOUBLE PRECISION NOT NULL")
