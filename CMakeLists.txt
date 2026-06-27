@@ -19,6 +19,14 @@ target_include_directories(l3_order_book_tests PRIVATE
     cpp_engine/src
 )
 
+add_executable(matching_engine_tests
+    tests/matching_engine_tests.cpp
+)
+
+target_include_directories(matching_engine_tests PRIVATE
+    cpp_engine/src
+)
+
 add_executable(benchmark_engine
     cpp_engine/benchmarks/benchmark_engine.cpp
 )
