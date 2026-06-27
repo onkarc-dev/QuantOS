@@ -28,10 +28,10 @@ public:
         OrderExecution execution = result.execution;
         execution.broker_order_id = broker_order_id(request.client_order_id);
         apply_broker_costs(execution);
-
         if (execution.message.empty()) execution.message = "paper order routed through matching engine";
+
         publish_reports(result, execution.broker_order_id);
-        publish_execution(execution);
+        if (result.execution_reports.empty()) publish_execution(execution);
         return execution;
     }
 
@@ -40,8 +40,9 @@ public:
         OrderExecution execution = result.execution;
         execution.broker_order_id = broker_order_id(client_order_id);
         if (execution.message.empty()) execution.message = "paper cancel routed through matching engine";
+
         publish_reports(result, execution.broker_order_id);
-        publish_execution(execution);
+        if (result.execution_reports.empty()) publish_execution(execution);
         return execution;
     }
 
