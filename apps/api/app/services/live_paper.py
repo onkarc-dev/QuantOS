@@ -531,8 +531,20 @@ class LivePaperManager:
                 _copy_final_reports(session.user_id, session.session_id)
                 return self.status(user_id)
             try:
+                session_dir = _live_session_dir(user_id, session.session_id)
                 for sym, cfg_path in (live_config.get("config_paths") or {}).items():
-                    cmd = [str(binary), "--managed-run", "--config", str(cfg_path), "--snapshot-ms", "1000"]
+                    output_dir = session_dir / "symbols" / str(sym).upper()
+                    output_dir.mkdir(parents=True, exist_ok=True)
+                    cmd = [
+                        str(binary),
+                        "--managed-run",
+                        "--config",
+                        str(cfg_path),
+                        "--output-dir",
+                        str(output_dir),
+                        "--snapshot-ms",
+                        "1000",
+                    ]
                     proc = subprocess.Popen(
                         cmd,
                         cwd=str(settings.project_root),
@@ -570,197 +582,109 @@ class LivePaperManager:
                     symbol_state["realized_pnl"] = _float(metrics.get("realized_pnl"), symbol_state.get("realized_pnl", 0.0))
                     symbol_state["unrealized_pnl"] = _float(metrics.get("unrealized_pnl"), symbol_state.get("unrealized_pnl", 0.0))
                     symbol_state["processed"] = int(_float(metrics.get("processed"), symbol_state.get("processed", 0)))
-                    session.last_price = symbol_state["last_price"]
-                    session.processed = sum(int(_float(st.get("processed"))) for st in session.symbol_states.values())
+                    symbol_state["bars"] = int(_float(metrics.get("bars"), symbol_state.get("bars", 0)))
+                    symbol_state["signals"] = int(_float(metrics.get("signals"), symbol_state.get("signals", 0)))
+                    symbol_state["open_positions"] = int(_float(metrics.get("open_positions"), symbol_state.get("open_positions", 0)))
+                    symbol_state["open_trade"] = int(_float(metrics.get("open_trade"), symbol_state.get("open_trade", 0)))
+                    symbol_state["total_trades"] = int(_float(metrics.get("total_trades"), symbol_state.get("total_trades", 0)))
+                    symbol_state["wins"] = int(_float(metrics.get("wins"), symbol_state.get("wins", 0)))
+                    symbol_state["losses"] = int(_float(metrics.get("losses"), symbol_state.get("losses", 0)))
+                    symbol_state["breakevens"] = int(_float(metrics.get("breakevens"), symbol_state.get("breakevens", 0)))
+                    symbol_state["gross_R"] = _float(metrics.get("gross_R"), symbol_state.get("gross_R", 0.0))
+                    symbol_state["avg_R"] = _float(metrics.get("avg_R"), symbol_state.get("avg_R", 0.0))
+                    symbol_state["last_result"] = metrics.get("last_result", symbol_state.get("last_result", "NONE"))
+                    symbol_state["current_setup_score"] = _float(metrics.get("current_setup_score"), symbol_state.get("current_setup_score", 0.0))
+                    symbol_state["p95_engine_us"] = _float(metrics.get("p95_engine_us"), symbol_state.get("p95_engine_us", 0.0))
+                    symbol_state["p99_engine_us"] = _float(metrics.get("p99_engine_us"), symbol_state.get("p99_engine_us", 0.0))
+                    session.metrics = _aggregate_session_metrics(session)
+                    session.session_metrics = session.metrics
+                    session.last_price = max((_float(st.get("last_price")) for st in session.symbol_states.values()), default=session.last_price)
                     session.realized_pnl = sum(_float(st.get("realized_pnl")) for st in session.symbol_states.values())
                     session.unrealized_pnl = sum(_float(st.get("unrealized_pnl")) for st in session.symbol_states.values())
-                    # Keep the latest C++ engine counters so the SaaS UI can show
-                    # wins/losses/R/latency instead of a static synthetic-data card.
-                    typed_metrics: Dict[str, Any] = {}
-                    for key, value in metrics.items():
-                        try:
-                            f = float(value)
-                            typed_metrics[key] = int(f) if f.is_integer() else f
-                        except Exception:
-                            typed_metrics[key] = value
-                    session.symbol_states.setdefault(symbol, {}).update(typed_metrics)
-                    session.symbol_states[symbol]["last_price"] = session.last_price
-                    # Build one atomic aggregate snapshot from all symbol states.
-                    # This prevents dashboard cards (Gross R, Avg R, W/L/BE, Last Result)
-                    # from displaying mixed values during polling.
-                    aggregate = _aggregate_session_metrics(session)
-                    # Keep cfg_* values and latest per-symbol C++ diagnostics, then overlay
-                    # the authoritative closed-trade aggregate metrics.
-                    cfg_metrics = {k: v for k, v in session.metrics.items() if str(k).startswith("cfg_")}
-                    cfg_metrics.update({k: v for k, v in typed_metrics.items() if str(k).startswith("cfg_")})
-                    session.metrics = {**typed_metrics, **cfg_metrics, **aggregate}
-                    session.session_metrics = dict(aggregate)
-                    session.processed = int(aggregate.get("processed", 0))
-                    wallet = _update_wallet(session.user_id, session.session_id, session.realized_pnl, session.unrealized_pnl)
-                    if wallet.get("locked_until"):
-                        session.status = "locked"
-                        self._terminate(session)
-            if line.startswith("PAPER_BUY_FILL") or line.startswith("PAPER_SELL_FILL") or line.startswith("PRISM_OUTPUT"):
-                ev = {"event_type": line.split()[0], "raw": line, "created_at": now(), "symbol": symbol}
-                ev.update(dict(_metric_re.findall(line)))
-                ev["symbol"] = str(ev.get("symbol") or symbol).upper()
+                    session.processed = int(session.metrics.get("processed", 0))
+                    _update_wallet(session.user_id, session.session_id, session.realized_pnl, session.unrealized_pnl)
+                    self._capture_event_from_line(session, line)
+            else:
                 with self._lock:
-                    session.events.append(ev)
-                    session.events = session.events[-500:]
-                    if ev["event_type"] == "PAPER_SELL_FILL":
-                        aggregate = _aggregate_session_metrics(session)
-                        session.metrics = {**session.metrics, **aggregate}
-                        session.session_metrics = dict(aggregate)
-                _save_trade_event(session.user_id, session.session_id, ev)
-        rc = process.poll()
+                    self._capture_event_from_line(session, line)
         with self._lock:
-            if symbol in session.processes:
-                # Keep finished process in the dict for final metrics, but mark state.
-                session.symbol_states.setdefault(symbol, {})["process_rc"] = rc
-            if session.status == "running" and all(p.poll() is not None for p in session.processes.values()):
-                session.status = "stopped" if all((p.poll() or 0) == 0 for p in session.processes.values()) else "failed"
+            if all(p.poll() is not None for p in session.processes.values()) and session.status == "running":
+                session.status = "stopped"
                 session.stopped_at = now()
                 session.report_files = _copy_final_reports(session.user_id, session.session_id)
 
-    def _terminate_process(self, p: Optional[subprocess.Popen]) -> None:
-        if not p or p.poll() is not None:
+    def _capture_event_from_line(self, session: LivePaperSession, line: str) -> None:
+        if not (line.startswith("PAPER_BUY_FILL") or line.startswith("PAPER_SELL_FILL") or line.startswith("PRISM_OUTPUT signal=")):
             return
-        try:
-            if os.name == "nt":
-                p.send_signal(signal.CTRL_BREAK_EVENT)
-            else:
-                p.terminate()
-        except Exception:
-            try:
-                p.kill()
-            except Exception:
-                pass
-
-    def _terminate(self, session: LivePaperSession) -> None:
-        for p in list(session.processes.values()) or ([session.process] if session.process else []):
-            self._terminate_process(p)
+        metrics = dict(_metric_re.findall(line))
+        ev_type = "PRISM_SIGNAL" if line.startswith("PRISM_OUTPUT") else line.split()[0]
+        event = {
+            "event_type": ev_type,
+            "symbol": metrics.get("symbol", DEFAULT_SYMBOL).upper(),
+            "price": _float(metrics.get("fill") or metrics.get("entry") or metrics.get("exit")),
+            "qty": _float(metrics.get("qty")),
+            "pnl": _float(metrics.get("pnl")),
+            "r": _float(metrics.get("R_multiple") or metrics.get("last_R")),
+            "result": metrics.get("result", ""),
+            "line": line,
+            "ts": now(),
+        }
+        session.events.append(event)
+        session.events = session.events[-200:]
+        _save_trade_event(session.user_id, session.session_id, event)
 
     def stop(self, user_id: str) -> Dict[str, Any]:
         with self._lock:
             session = self._sessions.get(user_id)
             if not session:
-                return {"status": "idle", "message": "No live paper session is running."}
-            session.status = "stopping"
-            self._terminate(session)
-        # Give C++ process a moment to handle SIGTERM and write final files.
-        deadline = time.time() + 5
-        while any(p.poll() is None for p in session.processes.values()) and time.time() < deadline:
-            time.sleep(0.1)
-        for p in session.processes.values():
-            if p.poll() is None:
-                p.kill()
-        session.stopped_at = now()
-        session.status = "stopped"
-        session.report_files = _copy_final_reports(session.user_id, session.session_id)
-        return self.status(user_id)
+                return {"status": "idle"}
+            for proc in session.processes.values():
+                if proc.poll() is None:
+                    if os.name == "nt":
+                        proc.send_signal(signal.CTRL_BREAK_EVENT)
+                    else:
+                        proc.terminate()
+            time.sleep(0.3)
+            for proc in session.processes.values():
+                if proc.poll() is None:
+                    proc.kill()
+            session.status = "stopped"
+            session.stopped_at = now()
+            session.report_files = _copy_final_reports(session.user_id, session.session_id)
+            return self.status(user_id)
 
     def status(self, user_id: str) -> Dict[str, Any]:
         with self._lock:
             session = self._sessions.get(user_id)
             if not session:
-                wallet = get_wallet(user_id)
-                return {"status": "idle", "symbol": DEFAULT_SYMBOL, "synthetic_data_used": False, "wallet": wallet, "markets": _market_table(None), "supported_symbols": SUPPORTED_SYMBOLS}
-            snapshot = _read_dashboard_snapshot(session.user_id, session.session_id)
-            open_position = snapshot.get("open_position") or snapshot.get("open_trade") or snapshot.get("trade_state", {}).get("open_trade")
+                return {"status": "idle", "market_table": _market_table(None)}
+            wallet = _update_wallet(user_id, session.session_id, session.realized_pnl, session.unrealized_pnl)
+            metrics = session.metrics or _aggregate_session_metrics(session)
             return {
                 "status": session.status,
                 "session_id": session.session_id,
                 "session_number": session.session_number,
-                "selected_strategy_id": session.selected_strategy_id,
-                "selected_strategy_db_id": session.selected_strategy_db_id,
-                "selected_strategy_name": session.selected_strategy_name,
-                "config_path": session.config_path,
-                "live_config": session.live_config,
-                "symbol": "MULTI" if len(session.live_config.get("symbols") or []) > 1 else ((session.live_config.get("symbols") or [DEFAULT_SYMBOL])[0]),
-                "mode": "live-paper",
-                "real_time": True if session.status == "running" else False,
-                "synthetic_data_used": False,
-                "last_price": session.last_price,
-                "processed": session.processed,
-                "metrics": session.metrics,
-                "session_metrics": session.session_metrics or session.metrics,
-                "symbol_states": session.symbol_states,
-                "realized_pnl": round(session.realized_pnl, 6),
-                "unrealized_pnl": round(session.unrealized_pnl, 6),
-                "open_position": open_position,
-                "events": session.events[-50:],
-                "stdout_tail": session.stdout_tail[-20:],
-                "error": session.error,
                 "started_at": session.started_at,
                 "stopped_at": session.stopped_at,
+                "last_price": session.last_price,
+                "processed": session.processed,
+                "realized_pnl": session.realized_pnl,
+                "unrealized_pnl": session.unrealized_pnl,
+                "metrics": metrics,
+                "session_metrics": metrics,
+                "symbol_states": session.symbol_states,
+                "events": session.events[-50:],
+                "stdout_tail": session.stdout_tail[-50:],
                 "report_files": session.report_files,
-                "output_dir": str(_live_session_dir(session.user_id, session.session_id)),
-                "wallet": get_wallet(user_id),
-                "markets": _market_table(session),
-                "supported_symbols": SUPPORTED_SYMBOLS,
+                "wallet": wallet,
+                "error": session.error,
+                "selected_strategy_id": session.selected_strategy_id,
+                "selected_strategy_name": session.selected_strategy_name,
+                "selected_strategy_db_id": session.selected_strategy_db_id,
+                "config_path": session.config_path,
+                "live_config": session.live_config,
+                "market_table": _market_table(session),
             }
-
-    def trades(self, user_id: str) -> Dict[str, Any]:
-        with get_conn() as conn:
-            if settings.is_postgres():
-                rows = conn.execute("SELECT * FROM live_trades WHERE user_id=%s ORDER BY created_at DESC LIMIT 200", (user_id,)).fetchall()
-            else:
-                rows = conn.execute("SELECT * FROM live_trades WHERE user_id=? ORDER BY created_at DESC LIMIT 200", (user_id,)).fetchall()
-        out = []
-        for r in rows:
-            d = row_to_dict(r)
-            try:
-                d["trade"] = json.loads(d.get("trade_json") or "{}")
-            except Exception:
-                d["trade"] = {}
-            out.append(d)
-        return {"symbol": "MULTI", "trades": out}
-
-
-def get_wallet(user_id: str) -> Dict[str, Any]:
-    with get_conn() as conn:
-        q = "SELECT * FROM live_wallets WHERE user_id=%s" if settings.is_postgres() else "SELECT * FROM live_wallets WHERE user_id=?"
-        row = conn.execute(q, (user_id,)).fetchone()
-    if not row:
-        return {
-            "user_id": user_id,
-            "session_id": "",
-            "starting_balance": STARTING_BALANCE,
-            "current_balance": STARTING_BALANCE,
-            "account_equity": STARTING_BALANCE,
-            "cash_balance": STARTING_BALANCE,
-            "realized_pnl": 0.0,
-            "unrealized_pnl": 0.0,
-            "locked_until": "",
-        }
-    d = row_to_dict(row)
-    starting = _float(d.get("starting_balance"), STARTING_BALANCE)
-    realized = _float(d.get("realized_pnl"))
-    unrealized = _float(d.get("unrealized_pnl"))
-    account_equity = _float(d.get("current_balance"), starting + realized + unrealized)
-    cash_balance = starting + realized
-    return {
-        "user_id": d.get("user_id"),
-        "session_id": d.get("session_id") or "",
-        "starting_balance": starting,
-        # Backwards-compatible field: current_balance means account equity.
-        "current_balance": account_equity,
-        "account_equity": account_equity,
-        "cash_balance": cash_balance,
-        "realized_pnl": realized,
-        "unrealized_pnl": unrealized,
-        "locked_until": d.get("locked_until") or "",
-        "updated_at": d.get("updated_at") or "",
-    }
 
 
 manager = LivePaperManager()
-
-# Keep old replay function only for explicit /replay diagnostics. It is not used by live mode.
-def replay_csv_paper_session(csv_path: Path, max_rows: int = 250) -> Dict[str, Any]:
-    return {
-        "status": "disabled_for_live_mode",
-        "message": "CSV replay is disabled for Phase 2 live paper trading. Use /live-paper/start for real Binance WebSocket mode.",
-        "input_data": str(csv_path),
-        "synthetic_data_used": False,
-    }
