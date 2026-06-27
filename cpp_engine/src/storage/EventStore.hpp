@@ -3,6 +3,7 @@
 #include "../trading/OrderTypes.hpp"
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -41,29 +42,19 @@ public:
     }
 
     void order(const OrderRequest& o) {
-        std::ostringstream ss;
-        ss << "{\"client_order_id\":" << o.client_order_id
-           << ",\"symbol\":\"" << esc(o.symbol) << "\""
-           << ",\"side\":\"" << to_string(o.side) << "\""
-           << ",\"quantity\":" << o.quantity
-           << ",\"limit_price\":" << o.limit_price
-           << ",\"strategy_tag\":\"" << esc(o.strategy_tag) << "\"}";
-        append("ORDER_SUBMIT", ss.str());
+        const std::string payload = order_payload(o);
+        append("ORDER_SUBMIT", payload);
+        append_order_lifecycle(payload);
     }
 
     void execution(const OrderExecution& e) {
-        std::ostringstream ss;
-        ss << "{\"client_order_id\":" << e.client_order_id
-           << ",\"broker_order_id\":\"" << esc(e.broker_order_id) << "\""
-           << ",\"symbol\":\"" << esc(e.symbol) << "\""
-           << ",\"side\":\"" << to_string(e.side) << "\""
-           << ",\"status\":\"" << to_string(e.status) << "\""
-           << ",\"requested_quantity\":" << e.requested_quantity
-           << ",\"filled_quantity\":" << e.filled_quantity
-           << ",\"fill_price\":" << e.fill_price
-           << ",\"commission\":" << e.commission
-           << ",\"message\":\"" << esc(e.message) << "\"}";
-        append(e.status == OrderStatus::FILLED ? "ORDER_FILL" : "ORDER_EXECUTION", ss.str());
+        const std::string payload = execution_payload(e);
+
+        // Backward-compatible event names used by existing UI/API consumers.
+        append(e.status == OrderStatus::FILLED ? "ORDER_FILL" : "ORDER_EXECUTION", payload);
+
+        // Normalized lifecycle stream for durable audit/replay/analytics consumers.
+        append_execution_lifecycle(payload);
     }
 
     void position_snapshot(const std::string& symbol, double qty, double avg, double realized, double unrealized) {
@@ -80,13 +71,84 @@ public:
     }
 
 private:
+    static constexpr const char* lifecycle_event_types_[9] = {
+        "ORDER_EVENT",
+        "TRADE_EVENT",
+        "EXECUTION_EVENT",
+        "PORTFOLIO_EVENT",
+        "RISK_EVENT",
+        "ANALYTICS_EVENT",
+        "LATENCY_EVENT",
+        "QUEUE_EVENT",
+        "FILL_QUALITY_EVENT"
+    };
+
+    static std::string order_payload(const OrderRequest& o) {
+        std::ostringstream ss;
+        ss << "{\"source\":\"paper_broker\""
+           << ",\"event_stage\":\"order\""
+           << ",\"client_order_id\":" << o.client_order_id
+           << ",\"symbol\":\"" << esc(o.symbol) << "\""
+           << ",\"side\":\"" << to_string(o.side) << "\""
+           << ",\"quantity\":" << o.quantity
+           << ",\"limit_price\":" << o.limit_price
+           << ",\"strategy_tag\":\"" << esc(o.strategy_tag) << "\"}";
+        return ss.str();
+    }
+
+    static std::string execution_payload(const OrderExecution& e) {
+        std::ostringstream ss;
+        ss << "{\"source\":\"paper_broker\""
+           << ",\"event_stage\":\"execution\""
+           << ",\"client_order_id\":" << e.client_order_id
+           << ",\"broker_order_id\":\"" << esc(e.broker_order_id) << "\""
+           << ",\"symbol\":\"" << esc(e.symbol) << "\""
+           << ",\"side\":\"" << to_string(e.side) << "\""
+           << ",\"status\":\"" << to_string(e.status) << "\""
+           << ",\"requested_quantity\":" << e.requested_quantity
+           << ",\"filled_quantity\":" << e.filled_quantity
+           << ",\"remaining_quantity\":" << e.remaining_quantity
+           << ",\"fill_price\":" << e.fill_price
+           << ",\"avg_fill_price\":" << e.avg_fill_price
+           << ",\"commission\":" << e.commission
+           << ",\"exchange_ts_ns\":" << e.exchange_ts_ns
+           << ",\"ack_ts_ns\":" << e.ack_ts_ns
+           << ",\"message\":\"" << esc(e.message) << "\"}";
+        return ss.str();
+    }
+
+    void append_order_lifecycle(const std::string& order_json_payload) {
+        for (const char* type : lifecycle_event_types_) {
+            append(type, order_json_payload);
+        }
+    }
+
+    void append_execution_lifecycle(const std::string& execution_json_payload) {
+        for (const char* type : lifecycle_event_types_) {
+            append(type, execution_json_payload);
+        }
+    }
+
     static std::string esc(const std::string& s) {
         std::string r; r.reserve(s.size());
-        for (char c : s) {
-            if (c == '"') r += "\\\"";
-            else if (c == '\\') r += "\\\\";
-            else if (c == '\n') r += "\\n";
-            else r += c;
+        for (unsigned char c : s) {
+            switch (c) {
+                case '"': r += "\\\""; break;
+                case '\\': r += "\\\\"; break;
+                case '\b': r += "\\b"; break;
+                case '\f': r += "\\f"; break;
+                case '\n': r += "\\n"; break;
+                case '\r': r += "\\r"; break;
+                case '\t': r += "\\t"; break;
+                default:
+                    if (c < 0x20) {
+                        std::ostringstream ss;
+                        ss << "\\u" << std::hex << std::setw(4) << std::setfill('0') << static_cast<int>(c);
+                        r += ss.str();
+                    } else {
+                        r += static_cast<char>(c);
+                    }
+            }
         }
         return r;
     }
