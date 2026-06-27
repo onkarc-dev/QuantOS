@@ -101,7 +101,7 @@ services:
       context: .
       dockerfile: Dockerfile.api
     container_name: quantos_worker
-    command: ["rq", "worker", "--url", "redis://redis:6379/0", "prismflow"]
+    command: ["python3", "-m", "app.worker"]
     environment:
       ENV: ${ENV:-production}
       DATABASE_URL: postgresql://quantos:${POSTGRES_PASSWORD:-quantos_local_dev}@postgres:5432/quantos
