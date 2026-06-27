@@ -87,6 +87,30 @@ def _float(v: Any, default: float = 0.0) -> float:
         return default
 
 
+def _live_session_dir(user_id: str, session_id: str) -> Path:
+    """Per-user/per-session live output root.
+
+    This prevents concurrent live paper sessions from overwriting shared files.
+    """
+    path = settings.project_root / "outputs" / "users" / user_id / "live_sessions" / session_id
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _legacy_live_output_dir() -> Path:
+    return settings.project_root / "outputs" / "prismflow_cpp_heavy"
+
+
+def _read_json_file(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
 def _insert_or_replace_wallet(user_id: str, session_id: str, locked_until: str = "") -> None:
     with get_conn() as conn:
         if settings.is_postgres():
@@ -186,20 +210,26 @@ def _save_trade_event(user_id: str, session_id: str, event: Dict[str, Any]) -> N
         conn.commit()
 
 
-def _read_dashboard_snapshot() -> Dict[str, Any]:
-    p = settings.project_root / "outputs" / "prismflow_cpp_heavy" / "dashboard" / "snapshot.json"
-    if not p.exists():
-        return {}
-    try:
-        return json.loads(p.read_text(encoding="utf-8", errors="replace"))
-    except Exception:
-        return {}
+def _read_dashboard_snapshot(user_id: str = "", session_id: str = "") -> Dict[str, Any]:
+    if user_id and session_id:
+        session_dir = _live_session_dir(user_id, session_id)
+        for candidate in (
+            session_dir / "dashboard" / "snapshot.json",
+            session_dir / "live_dashboard_snapshot.json",
+        ):
+            data = _read_json_file(candidate)
+            if data:
+                return data
+
+    # Backward compatibility: current C++ live binary may still write here until
+    # it accepts explicit per-session output paths. Use only as fallback.
+    return _read_json_file(_legacy_live_output_dir() / "dashboard" / "snapshot.json")
 
 
 
 def _next_session_number(user_id: str) -> int:
     """Return a stable per-user live session serial: 0, 1, 2..."""
-    counter_dir = settings.project_root / "outputs" / user_id
+    counter_dir = settings.project_root / "outputs" / "users" / user_id
     counter_dir.mkdir(parents=True, exist_ok=True)
     counter_file = counter_dir / "live_session_counter.txt"
     try:
@@ -300,17 +330,21 @@ def _write_live_strategy_config(user_id: str, session_id: str, strategy_id: str 
     payload["user_id"] = user_id
     payload["session_id"] = session_id
     payload["synthetic_data_used"] = False
-    cfg_dir = settings.project_root / "outputs" / user_id / session_id
+    session_dir = _live_session_dir(user_id, session_id)
+    cfg_dir = session_dir / "config"
     cfg_dir.mkdir(parents=True, exist_ok=True)
     config_paths: Dict[str, str] = {}
     for sym in symbols:
         one = dict(payload)
         one["symbols"] = [sym]
         one["active_symbol"] = sym
+        one["output_dir"] = str(session_dir / "symbols" / sym)
+        (session_dir / "symbols" / sym).mkdir(parents=True, exist_ok=True)
         cfg_path = cfg_dir / f"live_strategy_config_{sym}.json"
         cfg_path.write_text(json.dumps(one, indent=2), encoding="utf-8")
         config_paths[sym] = str(cfg_path)
     summary_path = cfg_dir / "live_strategy_config.json"
+    payload["output_dir"] = str(session_dir)
     payload["config_paths"] = config_paths
     payload["config_path"] = str(summary_path)
     summary_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -381,23 +415,17 @@ def _aggregate_session_metrics(session: "LivePaperSession") -> Dict[str, Any]:
         "setup_score": round(current_setup_score, 3),
     }
 
-def _copy_final_reports(session_id: str) -> Dict[str, str]:
-    out = settings.project_root / "outputs" / "prismflow_cpp_heavy"
-    out.mkdir(parents=True, exist_ok=True)
-    dashboard = _read_dashboard_snapshot()
+
+def _copy_final_reports(user_id: str, session_id: str) -> Dict[str, str]:
+    out = _live_session_dir(user_id, session_id)
+    dashboard = _read_dashboard_snapshot(user_id, session_id)
     summary_path = out / "live_session_summary.json"
     snapshot_path = out / "live_dashboard_snapshot.json"
     trade_log_path = out / "live_trade_log.csv"
 
-    existing_summary = out / "live_paper_summary.json"
-    if existing_summary.exists():
-        try:
-            data = json.loads(existing_summary.read_text(encoding="utf-8", errors="replace"))
-        except Exception:
-            data = {}
-    else:
-        data = {}
-    data.update({"session_id": session_id, "mode": "live-paper", "symbol": (dashboard.get("symbol") or DEFAULT_SYMBOL), "synthetic_data_used": False})
+    existing_summary = _legacy_live_output_dir() / "live_paper_summary.json"
+    data = _read_json_file(existing_summary)
+    data.update({"session_id": session_id, "user_id": user_id, "mode": "live-paper", "symbol": (dashboard.get("symbol") or DEFAULT_SYMBOL), "synthetic_data_used": False})
     summary_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     snapshot_path.write_text(json.dumps(dashboard, indent=2), encoding="utf-8")
 
@@ -413,6 +441,7 @@ def _copy_final_reports(session_id: str) -> Dict[str, str]:
         "live_trade_log.csv": str(trade_log_path),
         "live_session_summary.json": str(summary_path),
         "live_dashboard_snapshot.json": str(snapshot_path),
+        "output_dir": str(out),
     }
 
 
@@ -499,7 +528,7 @@ class LivePaperManager:
             if not binary.exists():
                 session.status = "disabled"
                 session.error = f"Live paper binary not found: {binary}. Synthetic fallback is disabled. Build C++ target first."
-                _copy_final_reports(session.session_id)
+                _copy_final_reports(session.user_id, session.session_id)
                 return self.status(user_id)
             try:
                 for sym, cfg_path in (live_config.get("config_paths") or {}).items():
@@ -591,7 +620,7 @@ class LivePaperManager:
             if session.status == "running" and all(p.poll() is not None for p in session.processes.values()):
                 session.status = "stopped" if all((p.poll() or 0) == 0 for p in session.processes.values()) else "failed"
                 session.stopped_at = now()
-                session.report_files = _copy_final_reports(session.session_id)
+                session.report_files = _copy_final_reports(session.user_id, session.session_id)
 
     def _terminate_process(self, p: Optional[subprocess.Popen]) -> None:
         if not p or p.poll() is not None:
@@ -627,7 +656,7 @@ class LivePaperManager:
                 p.kill()
         session.stopped_at = now()
         session.status = "stopped"
-        session.report_files = _copy_final_reports(session.session_id)
+        session.report_files = _copy_final_reports(session.user_id, session.session_id)
         return self.status(user_id)
 
     def status(self, user_id: str) -> Dict[str, Any]:
@@ -636,7 +665,7 @@ class LivePaperManager:
             if not session:
                 wallet = get_wallet(user_id)
                 return {"status": "idle", "symbol": DEFAULT_SYMBOL, "synthetic_data_used": False, "wallet": wallet, "markets": _market_table(None), "supported_symbols": SUPPORTED_SYMBOLS}
-            snapshot = _read_dashboard_snapshot()
+            snapshot = _read_dashboard_snapshot(session.user_id, session.session_id)
             open_position = snapshot.get("open_position") or snapshot.get("open_trade") or snapshot.get("trade_state", {}).get("open_trade")
             return {
                 "status": session.status,
@@ -665,6 +694,7 @@ class LivePaperManager:
                 "started_at": session.started_at,
                 "stopped_at": session.stopped_at,
                 "report_files": session.report_files,
+                "output_dir": str(_live_session_dir(session.user_id, session.session_id)),
                 "wallet": get_wallet(user_id),
                 "markets": _market_table(session),
                 "supported_symbols": SUPPORTED_SYMBOLS,
