@@ -50,6 +50,10 @@ void test_deterministic_latency_with_same_seed() {
     auto ra = a.submit_order(market_order(1, Side::BUY, 1.0), 100.0, 1'000);
     auto rb = b.submit_order(market_order(1, Side::BUY, 1.0), 100.0, 1'000);
 
+    assert(ra.execution.network_latency_ns == rb.execution.network_latency_ns);
+    assert(ra.execution.gateway_latency_ns == rb.execution.gateway_latency_ns);
+    assert(ra.execution.exchange_latency_ns == rb.execution.exchange_latency_ns);
+    assert(ra.execution.acknowledgement_delay_ns == rb.execution.acknowledgement_delay_ns);
     assert(ra.execution.total_latency_ns == rb.execution.total_latency_ns);
     assert(ra.execution.queue_delay_ns == rb.execution.queue_delay_ns);
     assert(ra.execution.ack_ts_ns == rb.execution.ack_ts_ns);
@@ -68,6 +72,14 @@ void test_random_latency_within_bounds() {
                                cfg.exchange_latency_max_ns + cfg.acknowledgement_delay_max_ns +
                                (2 * cfg.queue_delay_per_order_ns);
 
+    assert(r.execution.network_latency_ns >= cfg.network_latency_min_ns);
+    assert(r.execution.network_latency_ns <= cfg.network_latency_max_ns);
+    assert(r.execution.gateway_latency_ns >= cfg.gateway_latency_min_ns);
+    assert(r.execution.gateway_latency_ns <= cfg.gateway_latency_max_ns);
+    assert(r.execution.exchange_latency_ns >= cfg.exchange_latency_min_ns);
+    assert(r.execution.exchange_latency_ns <= cfg.exchange_latency_max_ns);
+    assert(r.execution.acknowledgement_delay_ns >= cfg.acknowledgement_delay_min_ns);
+    assert(r.execution.acknowledgement_delay_ns <= cfg.acknowledgement_delay_max_ns);
     assert(r.execution.total_latency_ns >= min_total);
     assert(r.execution.total_latency_ns <= max_total);
     assert(r.execution.ack_ts_ns == r.execution.exchange_ts_ns + r.execution.total_latency_ns);
@@ -101,6 +113,21 @@ void test_liquidity_shortage_causes_partial_fill() {
     assert_near(r.execution.remaining_quantity, 2.0);
 }
 
+void test_synthetic_liquidity_does_not_accumulate_between_orders() {
+    auto cfg = base_config();
+    cfg.top_of_book_liquidity = 2.0;
+    cfg.second_level_liquidity = 1.0;
+    ExchangeSimulator sim(cfg);
+
+    auto first = sim.submit_order(market_order(50, Side::BUY, 5.0), 100.0, 5'000);
+    auto second = sim.submit_order(market_order(51, Side::BUY, 5.0), 100.0, 5'100);
+
+    assert(first.execution.status == OrderStatus::PARTIALLY_FILLED);
+    assert(second.execution.status == OrderStatus::PARTIALLY_FILLED);
+    assert_near(first.execution.filled_quantity, 3.0);
+    assert_near(second.execution.filled_quantity, 3.0);
+}
+
 void test_market_impact_increases_with_order_size() {
     auto cfg = base_config();
     cfg.top_of_book_liquidity = 10.0;
@@ -132,6 +159,29 @@ void test_slippage_is_configurable() {
     assert(high_r.execution.avg_fill_price > low_r.execution.avg_fill_price);
 }
 
+void test_auction_hook_is_used() {
+    ExchangeSimulator sim(base_config());
+    sim.enter_auction();
+    sim.set_auction_hook([](const OrderRequest& request, double mid, uint64_t ts_ns) {
+        MatchingEngine::MatchResult result;
+        result.execution.client_order_id = request.client_order_id;
+        result.execution.symbol = request.symbol;
+        result.execution.side = request.side;
+        result.execution.status = OrderStatus::ACCEPTED;
+        result.execution.requested_quantity = request.quantity;
+        result.execution.remaining_quantity = request.quantity;
+        result.execution.reference_price = mid;
+        result.execution.exchange_ts_ns = ts_ns;
+        result.execution.message = "auction accepted";
+        return result;
+    });
+
+    auto r = sim.submit_order(market_order(10, Side::BUY, 1.0), 100.0, 10'000);
+    assert(r.execution.status == OrderStatus::ACCEPTED);
+    assert(r.execution.message == "auction accepted");
+    assert(r.execution.total_latency_ns > 0);
+}
+
 } // namespace
 
 int main() {
@@ -140,7 +190,9 @@ int main() {
     test_halt_rejects_order();
     test_session_closed_rejects_order();
     test_liquidity_shortage_causes_partial_fill();
+    test_synthetic_liquidity_does_not_accumulate_between_orders();
     test_market_impact_increases_with_order_size();
     test_slippage_is_configurable();
+    test_auction_hook_is_used();
     return 0;
 }
