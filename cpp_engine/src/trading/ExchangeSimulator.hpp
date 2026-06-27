@@ -4,8 +4,10 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <random>
 #include <string>
+#include <utility>
 #include <vector>
 
 class ExchangeSimulator {
@@ -153,22 +155,22 @@ private:
         uint64_t levels = 0;
 
         if (cfg_.top_of_book_liquidity > kEpsilon) {
-            seed_liquidity(contra_side, cfg_.top_of_book_liquidity, first_price, ts_ns);
+            seed_liquidity(request.symbol, contra_side, cfg_.top_of_book_liquidity, first_price, ts_ns);
             ++levels;
         }
         if (cfg_.second_level_liquidity > kEpsilon) {
             const double second_price = side_adjusted_price(request.side, mid, cfg_.bid_ask_spread_bps,
                                                             first_extra + cfg_.second_level_distance_bps);
-            seed_liquidity(contra_side, cfg_.second_level_liquidity, second_price, ts_ns);
+            seed_liquidity(request.symbol, contra_side, cfg_.second_level_liquidity, second_price, ts_ns);
             ++levels;
         }
         return levels;
     }
 
-    void seed_liquidity(Side side, double quantity, double price, uint64_t ts_ns) {
+    void seed_liquidity(const std::string& symbol, Side side, double quantity, double price, uint64_t ts_ns) {
         OrderRequest liquidity;
         liquidity.client_order_id = next_liquidity_order_id_++;
-        liquidity.symbol = "SIM_LIQUIDITY";
+        liquidity.symbol = symbol;
         liquidity.side = side;
         liquidity.type = OrderType::LIMIT;
         liquidity.time_in_force = TimeInForce::GTC;
