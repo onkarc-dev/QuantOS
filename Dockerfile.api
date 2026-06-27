@@ -1,6 +1,6 @@
 # QuantOS API Dockerfile
 # Render-safe backend deployment
-# Builds required C++ backtest and live paper engines.
+# Builds required C++ backtest engine and optional live paper engine.
 
 FROM ubuntu:22.04 AS cpp_builder
 
@@ -25,9 +25,12 @@ COPY proto/ ./proto/
 
 RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
     && cmake --build build --target prism_backtest -- -j$(nproc) \
-    && cmake --build build --target prism_live_paper_trading -- -j$(nproc) \
-    && test -x /build/build/prism_backtest \
-    && test -x /build/build/prism_live_paper_trading
+    && if cmake --build build --target prism_live_paper_trading -- -j$(nproc); then \
+        echo "Built optional prism_live_paper_trading"; \
+    else \
+        echo "Optional prism_live_paper_trading target unavailable; live paper will fail fast unless the binary is mounted/provided"; \
+    fi \
+    && test -x /build/build/prism_backtest
 
 FROM ubuntu:22.04
 
@@ -64,11 +67,16 @@ COPY scripts/ ./scripts/
 RUN mkdir -p /app/build/Release /app/outputs
 
 COPY --from=cpp_builder /build/build/prism_backtest /app/build/Release/prism_backtest
-COPY --from=cpp_builder /build/build/prism_live_paper_trading /app/build/Release/prism_live_paper_trading
+COPY --from=cpp_builder /build/build/prism_live_paper_trading* /app/build/Release/
 
-RUN chmod +x /app/build/Release/prism_backtest /app/build/Release/prism_live_paper_trading \
+RUN chmod +x /app/build/Release/prism_backtest \
     && test -x /app/build/Release/prism_backtest \
-    && test -x /app/build/Release/prism_live_paper_trading
+    && if [ -x /app/build/Release/prism_live_paper_trading ]; then \
+        chmod +x /app/build/Release/prism_live_paper_trading; \
+        echo "Optional live paper binary installed"; \
+    else \
+        echo "Optional live paper binary not installed; live paper API will fail fast if requested"; \
+    fi
 
 ENV OUTPUTS_ROOT=/app/outputs
 ENV ENGINE_BINARY_PATH=/app/build/Release/prism_backtest
