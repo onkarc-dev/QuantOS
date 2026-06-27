@@ -152,7 +152,7 @@ def run_engine_sync(job_payload: Dict[str, Any]) -> Dict[str, Any]:
     rather than an opaque 500. The API can still return 200 with status=failed
     so the frontend shows a useful message.
     """
-    job_id = str(uuid.uuid4())
+    job_id = job_payload.get("job_id") or str(uuid.uuid4())
     user_id = job_payload.get("user_id", "demo_user")
     strategy_id = job_payload.get("strategy_id", "demo")
     mode = job_payload.get("mode", "backtest")
