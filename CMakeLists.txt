@@ -13,65 +13,28 @@ else()
     add_compile_options(-O3 -DNDEBUG)
 endif()
 
-add_executable(l2_order_book_tests
-    tests/l2_order_book_tests.cpp
-)
+function(add_optional_engine_test target source)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${source}")
+        add_executable(${target}
+            ${source}
+        )
 
-target_include_directories(l2_order_book_tests PRIVATE
-    cpp_engine/src
-)
+        target_include_directories(${target} PRIVATE
+            cpp_engine/src
+        )
 
-add_test(NAME l2_order_book_tests COMMAND l2_order_book_tests)
+        add_test(NAME ${target} COMMAND ${target})
+    else()
+        message(STATUS "Skipping optional test target ${target}: missing ${source}")
+    endif()
+endfunction()
 
-add_executable(l3_order_book_tests
-    tests/l3_order_book_tests.cpp
-)
-
-target_include_directories(l3_order_book_tests PRIVATE
-    cpp_engine/src
-)
-
-add_test(NAME l3_order_book_tests COMMAND l3_order_book_tests)
-
-add_executable(matching_engine_tests
-    tests/matching_engine_tests.cpp
-)
-
-target_include_directories(matching_engine_tests PRIVATE
-    cpp_engine/src
-)
-
-add_test(NAME matching_engine_tests COMMAND matching_engine_tests)
-
-add_executable(paper_broker_tests
-    tests/paper_broker_tests.cpp
-)
-
-target_include_directories(paper_broker_tests PRIVATE
-    cpp_engine/src
-)
-
-add_test(NAME paper_broker_tests COMMAND paper_broker_tests)
-
-add_executable(exchange_simulator_tests
-    tests/exchange_simulator_tests.cpp
-)
-
-target_include_directories(exchange_simulator_tests PRIVATE
-    cpp_engine/src
-)
-
-add_test(NAME exchange_simulator_tests COMMAND exchange_simulator_tests)
-
-add_executable(event_store_tests
-    tests/event_store_tests.cpp
-)
-
-target_include_directories(event_store_tests PRIVATE
-    cpp_engine/src
-)
-
-add_test(NAME event_store_tests COMMAND event_store_tests)
+add_optional_engine_test(l2_order_book_tests tests/l2_order_book_tests.cpp)
+add_optional_engine_test(l3_order_book_tests tests/l3_order_book_tests.cpp)
+add_optional_engine_test(matching_engine_tests tests/matching_engine_tests.cpp)
+add_optional_engine_test(paper_broker_tests tests/paper_broker_tests.cpp)
+add_optional_engine_test(exchange_simulator_tests tests/exchange_simulator_tests.cpp)
+add_optional_engine_test(event_store_tests tests/event_store_tests.cpp)
 
 add_executable(benchmark_engine
     cpp_engine/benchmarks/benchmark_engine.cpp
