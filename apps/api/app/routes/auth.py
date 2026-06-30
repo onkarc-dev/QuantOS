@@ -177,13 +177,25 @@ def _get_user_by_id(conn, user_id: str):
 
 def _create_access_token(user_id: str) -> str:
     exp = _utcnow() + datetime.timedelta(seconds=settings.access_token_ttl_seconds)
-    return jwt.encode({"sub": user_id, "typ": "access", "exp": exp}, settings.secret_key, algorithm="HS256")
+    return jwt.encode(
+        {"sub": user_id, "typ": "access", "jti": secrets.token_urlsafe(24), "exp": exp},
+        settings.secret_key,
+        algorithm="HS256",
+    )
 
 
 def _create_refresh_token(conn, user_id: str) -> str:
-    token = jwt.encode({"sub": user_id, "typ": "refresh", "exp": _utcnow() + datetime.timedelta(seconds=settings.refresh_ttl_seconds)}, settings.secret_key, algorithm="HS256")
+    exp = _utcnow() + datetime.timedelta(seconds=settings.refresh_ttl_seconds)
+    token = jwt.encode(
+        {"sub": user_id, "typ": "refresh", "jti": secrets.token_urlsafe(32), "exp": exp},
+        settings.secret_key,
+        algorithm="HS256",
+    )
     p = _p()
-    conn.execute(f"INSERT INTO refresh_tokens(token,user_id,expires_at,revoked,created_at) VALUES({p},{p},{p},{p},{p})", (token, user_id, _iso_exp(settings.refresh_ttl_seconds), 0, now()))
+    conn.execute(
+        f"INSERT INTO refresh_tokens(token,user_id,expires_at,revoked,created_at) VALUES({p},{p},{p},{p},{p})",
+        (token, user_id, _iso_exp(settings.refresh_ttl_seconds), 0, now()),
+    )
     return token
 
 
