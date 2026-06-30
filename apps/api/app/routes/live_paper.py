@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 from fastapi import APIRouter, Depends, Body
 
@@ -11,30 +12,59 @@ _live_paper_perf.install_live_paper_wallet_throttle(manager)
 
 router = APIRouter()
 
+_STATUS_CACHE: dict[str, tuple[float, dict]] = {}
+_RUNNING_STATUS_TTL_SECONDS = 1.0
+_IDLE_STATUS_TTL_SECONDS = 5.0
+
+
+def _cached_status(user_id: str) -> dict:
+    now_ts = time.time()
+    cached = _STATUS_CACHE.get(user_id)
+    if cached:
+        cached_ts, cached_status = cached
+        ttl = _RUNNING_STATUS_TTL_SECONDS if cached_status.get('status') in {'running', 'starting'} else _IDLE_STATUS_TTL_SECONDS
+        if now_ts - cached_ts < ttl:
+            return cached_status
+    status = manager.status(user_id)
+    _STATUS_CACHE[user_id] = (now_ts, status)
+    return status
+
+
+def _invalidate_status_cache(user_id: str) -> None:
+    _STATUS_CACHE.pop(user_id, None)
+
 
 @router.post('/start')
 def start_live_paper(payload: dict = Body(default={}), user=Depends(current_user)):
     payload = payload or {}
+    user_id = str(user['id'])
     strategy_id = str(payload.get('strategy_id') or '')
     symbols = payload.get('symbols') or []
     if isinstance(symbols, str):
         symbols = [symbols]
-    return manager.start(str(user['id']), strategy_id=strategy_id, symbols=symbols)
+    _invalidate_status_cache(user_id)
+    result = manager.start(user_id, strategy_id=strategy_id, symbols=symbols)
+    _STATUS_CACHE[user_id] = (time.time(), result)
+    return result
 
 
 @router.post('/stop')
 def stop_live_paper(user=Depends(current_user)):
-    return manager.stop(str(user['id']))
+    user_id = str(user['id'])
+    _invalidate_status_cache(user_id)
+    result = manager.stop(user_id)
+    _STATUS_CACHE[user_id] = (time.time(), result)
+    return result
 
 
 @router.get('/status')
 def status_live_paper(user=Depends(current_user)):
-    return manager.status(str(user['id']))
+    return _cached_status(str(user['id']))
 
 
 @router.get('/trades')
 def trades_live_paper(user=Depends(current_user)):
-    status = manager.status(str(user['id']))
+    status = _cached_status(str(user['id']))
     return {
         'status': status.get('status', 'idle'),
         'session_id': status.get('session_id', ''),
@@ -44,7 +74,7 @@ def trades_live_paper(user=Depends(current_user)):
 
 @router.get('/wallet')
 def wallet_live_paper(user=Depends(current_user)):
-    status = manager.status(str(user['id']))
+    status = _cached_status(str(user['id']))
     return status.get('wallet') or {
         'user_id': str(user['id']),
         'starting_balance': 100000.0,
