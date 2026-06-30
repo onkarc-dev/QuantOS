@@ -249,6 +249,7 @@ CREATE INDEX IF NOT EXISTS idx_strategies_user_id ON strategies(user_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs(user_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_user_status ON jobs(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_jobs_user_created_at ON jobs(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_reports_user_id ON reports(user_id);
 CREATE INDEX IF NOT EXISTS idx_reports_job_id ON reports(job_id);
 CREATE INDEX IF NOT EXISTS idx_trades_job_id ON trades(job_id);
