@@ -5,6 +5,9 @@ from app.core.config import settings
 from app.deps import current_user
 from app.services.data_manager import validate_market_csv
 from app.services.live_paper import manager
+from app.services import live_paper_perf as _live_paper_perf
+
+_live_paper_perf.install_live_paper_wallet_throttle(manager)
 
 router = APIRouter()
 
