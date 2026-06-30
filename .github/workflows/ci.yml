@@ -35,7 +35,7 @@ jobs:
       - name: Import FastAPI app
         run: PYTHONPATH=. python -c "from app.main import app; print(app.title)"
 
-      - name: Start API and check health/readiness
+      - name: Start API and check health/readiness/metrics
         run: |
           PYTHONPATH=. uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/quantos-api.log 2>&1 &
           API_PID=$!
@@ -47,6 +47,10 @@ jobs:
           done
           curl -fsS http://127.0.0.1:8000/health
           curl -fsS http://127.0.0.1:8000/system/readiness
+          curl -fsS http://127.0.0.1:8000/metrics | tee /tmp/quantos-metrics.txt
+          grep -q "quantos_api_requests_total" /tmp/quantos-metrics.txt
+          grep -q "quantos_api_errors_total" /tmp/quantos-metrics.txt
+          grep -q "quantos_safe_mode 1" /tmp/quantos-metrics.txt
           kill $API_PID
 
       - name: Show API logs on failure
