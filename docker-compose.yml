@@ -1,6 +1,8 @@
 # QuantOS — one-command local/production-candidate stack
 # Local: docker compose up --build
 # With monitoring: docker compose --profile production up --build
+# Scale backtest workers: docker compose up --build --scale worker=4
+# Each worker handles one RQ backtest at a time; scale based on CPU/RAM.
 
 version: "3.9"
 
@@ -96,6 +98,9 @@ services:
       retries: 3
     restart: unless-stopped
 
+  # Scale this service for concurrent backtests, for example:
+  #   docker compose up --build --scale worker=4
+  # Each worker process handles one RQ backtest at a time. Increase based on CPU/RAM.
   worker:
     build:
       context: .
