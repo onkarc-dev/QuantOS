@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime
+import hashlib
 import secrets
 import smtplib
 from email.message import EmailMessage
@@ -20,6 +21,8 @@ router = APIRouter()
 _LOGIN_ATTEMPTS: Dict[str, list[float]] = {}
 _LOGIN_LIMIT = 5
 _LOGIN_WINDOW_SECONDS = 15 * 60
+_REDIS_CLIENT: Any = None
+_REDIS_UNAVAILABLE = False
 
 
 def _utcnow() -> datetime.datetime:
@@ -55,13 +58,49 @@ def _p() -> str:
     return "%s" if settings.is_postgres() else "?"
 
 
+def _get_redis_client():
+    """Return a Redis client for distributed auth limits, or None on failure."""
+    global _REDIS_CLIENT, _REDIS_UNAVAILABLE
+    if _REDIS_CLIENT is not None:
+        return _REDIS_CLIENT
+    if _REDIS_UNAVAILABLE or not settings.redis_url:
+        return None
+    try:
+        from redis import Redis
+        client = Redis.from_url(settings.redis_url, socket_connect_timeout=1, socket_timeout=1)
+        client.ping()
+        _REDIS_CLIENT = client
+        return _REDIS_CLIENT
+    except Exception:
+        _REDIS_UNAVAILABLE = True
+        return None
+
+
 def _login_key(email: str, request: Request) -> str:
     forwarded = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
     host = forwarded or (request.client.host if request.client else "unknown")
     return f"{email}:{host}"
 
 
+def _redis_login_key(email: str, request: Request) -> str:
+    digest = hashlib.sha256(_login_key(email, request).encode("utf-8")).hexdigest()
+    return f"auth:login_fail:{digest}"
+
+
 def _check_login_rate_limit(email: str, request: Request) -> None:
+    client = _get_redis_client()
+    if client is not None:
+        try:
+            raw = client.get(_redis_login_key(email, request))
+            count = int(raw or 0)
+            if count >= _LOGIN_LIMIT:
+                raise HTTPException(status_code=429, detail="Too many login attempts. Please try again later.")
+            return
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+
     ts = datetime.datetime.utcnow().timestamp()
     key = _login_key(email, request)
     attempts = [t for t in _LOGIN_ATTEMPTS.get(key, []) if ts - t < _LOGIN_WINDOW_SECONDS]
@@ -71,6 +110,17 @@ def _check_login_rate_limit(email: str, request: Request) -> None:
 
 
 def _record_failed_login(email: str, request: Request) -> None:
+    client = _get_redis_client()
+    if client is not None:
+        try:
+            key = _redis_login_key(email, request)
+            count = client.incr(key)
+            if int(count) == 1:
+                client.expire(key, _LOGIN_WINDOW_SECONDS)
+            return
+        except Exception:
+            pass
+
     ts = datetime.datetime.utcnow().timestamp()
     key = _login_key(email, request)
     attempts = [t for t in _LOGIN_ATTEMPTS.get(key, []) if ts - t < _LOGIN_WINDOW_SECONDS]
@@ -79,6 +129,12 @@ def _record_failed_login(email: str, request: Request) -> None:
 
 
 def _clear_failed_logins(email: str, request: Request) -> None:
+    client = _get_redis_client()
+    if client is not None:
+        try:
+            client.delete(_redis_login_key(email, request))
+        except Exception:
+            pass
     _LOGIN_ATTEMPTS.pop(_login_key(email, request), None)
 
 
