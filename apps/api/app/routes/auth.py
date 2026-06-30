@@ -8,7 +8,7 @@ from email.message import EmailMessage
 from typing import Any, Dict
 
 import jwt
-from fastapi import APIRouter, HTTPException, Depends, Header
+from fastapi import APIRouter, HTTPException, Depends, Header, Request
 from pydantic import BaseModel, EmailStr
 
 from app.db import get_conn, hash_password, now, row_to_dict, verify_password
@@ -16,6 +16,10 @@ from app.core.config import settings
 from app.deps import current_user
 
 router = APIRouter()
+
+_LOGIN_ATTEMPTS: Dict[str, list[float]] = {}
+_LOGIN_LIMIT = 5
+_LOGIN_WINDOW_SECONDS = 15 * 60
 
 
 def _utcnow() -> datetime.datetime:
@@ -49,6 +53,33 @@ def _ph(password: str) -> str:
 
 def _p() -> str:
     return "%s" if settings.is_postgres() else "?"
+
+
+def _login_key(email: str, request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
+    host = forwarded or (request.client.host if request.client else "unknown")
+    return f"{email}:{host}"
+
+
+def _check_login_rate_limit(email: str, request: Request) -> None:
+    ts = datetime.datetime.utcnow().timestamp()
+    key = _login_key(email, request)
+    attempts = [t for t in _LOGIN_ATTEMPTS.get(key, []) if ts - t < _LOGIN_WINDOW_SECONDS]
+    if len(attempts) >= _LOGIN_LIMIT:
+        raise HTTPException(status_code=429, detail="Too many login attempts. Please try again later.")
+    _LOGIN_ATTEMPTS[key] = attempts
+
+
+def _record_failed_login(email: str, request: Request) -> None:
+    ts = datetime.datetime.utcnow().timestamp()
+    key = _login_key(email, request)
+    attempts = [t for t in _LOGIN_ATTEMPTS.get(key, []) if ts - t < _LOGIN_WINDOW_SECONDS]
+    attempts.append(ts)
+    _LOGIN_ATTEMPTS[key] = attempts
+
+
+def _clear_failed_logins(email: str, request: Request) -> None:
+    _LOGIN_ATTEMPTS.pop(_login_key(email, request), None)
 
 
 def _get_user_by_email(conn, email: str):
@@ -216,15 +247,18 @@ def register(payload: RegisterRequest):
 
 
 @router.post("/login", summary="Login and receive access + refresh tokens")
-def login(payload: LoginRequest):
+def login(payload: LoginRequest, request: Request):
     email = payload.email.lower().strip()
+    _check_login_rate_limit(email, request)
     with get_conn() as conn:
         row = _get_user_by_email(conn, email)
         user = row_to_dict(row) if row else {}
         if not row or not verify_password(payload.password, user.get("password_hash", "")):
+            _record_failed_login(email, request)
             raise HTTPException(status_code=401, detail="Invalid email or password")
         resp = _auth_response(conn, user)
         conn.commit()
+    _clear_failed_logins(email, request)
     return resp
 
 
