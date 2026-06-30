@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import datetime
-import random
+import secrets
 import smtplib
 from email.message import EmailMessage
 from typing import Any, Dict
@@ -29,6 +29,11 @@ def _iso_exp(seconds: int) -> str:
 
 def _otp_expiry() -> str:
     return _iso_exp(600)
+
+
+def _generate_otp() -> str:
+    """Return a six-digit OTP using cryptographic randomness."""
+    return f"{secrets.randbelow(900000) + 100000}"
 
 
 def _is_expired(value: str) -> bool:
@@ -147,7 +152,7 @@ def request_registration_otp(payload: RegisterRequest):
         if _get_user_by_email(conn, email):
             raise HTTPException(status_code=409, detail="This email id is already registered. Go for login.")
         p = _p()
-        otp = f"{random.randint(100000, 999999)}"
+        otp = _generate_otp()
         if settings.is_postgres():
             conn.execute(
                 """
@@ -252,7 +257,7 @@ def request_password_reset(payload: PasswordResetRequest):
     with get_conn() as conn:
         if not _get_user_by_email(conn, email):
             return {"message": "If that email exists, a reset OTP has been sent.", "email_sent": False}
-        otp = f"{random.randint(100000, 999999)}"
+        otp = _generate_otp()
         p = _p()
         if settings.is_postgres():
             conn.execute("INSERT INTO password_reset_otps(email,otp_code,expires_at,created_at) VALUES(%s,%s,%s,%s) ON CONFLICT(email) DO UPDATE SET otp_code=EXCLUDED.otp_code,expires_at=EXCLUDED.expires_at,created_at=EXCLUDED.created_at", (email, otp, _otp_expiry(), now()))
