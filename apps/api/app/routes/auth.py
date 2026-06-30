@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import logging
 import secrets
 import smtplib
 from email.message import EmailMessage
@@ -17,6 +18,7 @@ from app.core.config import settings
 from app.deps import current_user
 
 router = APIRouter()
+security_logger = logging.getLogger("quantos.security")
 
 _LOGIN_ATTEMPTS: Dict[str, list[float]] = {}
 _LOGIN_LIMIT = 5
@@ -58,6 +60,30 @@ def _p() -> str:
     return "%s" if settings.is_postgres() else "?"
 
 
+def _client_ip(request: Request | None) -> str:
+    if request is None:
+        return ""
+    forwarded = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
+    return forwarded or (request.client.host if request.client else "unknown")
+
+
+def _hash_email(email: str) -> str:
+    normalized = (email or "").lower().strip()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16] if normalized else ""
+
+
+def _audit(event: str, *, email: str = "", user_id: str = "", request: Request | None = None, outcome: str = "ok") -> None:
+    """Emit safe auth audit metadata without OTPs, passwords, or tokens."""
+    security_logger.info(
+        "auth_event event=%s outcome=%s email_hash=%s user_id=%s ip=%s",
+        event,
+        outcome,
+        _hash_email(email),
+        user_id or "",
+        _client_ip(request),
+    )
+
+
 def _get_redis_client():
     """Return a Redis client for distributed auth limits, or None on failure."""
     global _REDIS_CLIENT, _REDIS_UNAVAILABLE
@@ -77,8 +103,7 @@ def _get_redis_client():
 
 
 def _login_key(email: str, request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
-    host = forwarded or (request.client.host if request.client else "unknown")
+    host = _client_ip(request)
     return f"{email}:{host}"
 
 
@@ -94,6 +119,7 @@ def _check_login_rate_limit(email: str, request: Request) -> None:
             raw = client.get(_redis_login_key(email, request))
             count = int(raw or 0)
             if count >= _LOGIN_LIMIT:
+                _audit("login_rate_limited", email=email, request=request, outcome="blocked")
                 raise HTTPException(status_code=429, detail="Too many login attempts. Please try again later.")
             return
         except HTTPException:
@@ -105,6 +131,7 @@ def _check_login_rate_limit(email: str, request: Request) -> None:
     key = _login_key(email, request)
     attempts = [t for t in _LOGIN_ATTEMPTS.get(key, []) if ts - t < _LOGIN_WINDOW_SECONDS]
     if len(attempts) >= _LOGIN_LIMIT:
+        _audit("login_rate_limited", email=email, request=request, outcome="blocked")
         raise HTTPException(status_code=429, detail="Too many login attempts. Please try again later.")
     _LOGIN_ATTEMPTS[key] = attempts
 
@@ -231,12 +258,14 @@ class PasswordResetVerify(BaseModel):
 
 
 @router.post("/register/request-otp", summary="Generate and email an OTP for first-time registration")
-def request_registration_otp(payload: RegisterRequest):
+def request_registration_otp(payload: RegisterRequest, request: Request):
     email = payload.email.lower().strip()
     if len(payload.password) < 6:
+        _audit("registration_otp_requested", email=email, request=request, outcome="weak_password")
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
     with get_conn() as conn:
         if _get_user_by_email(conn, email):
+            _audit("registration_otp_requested", email=email, request=request, outcome="already_registered")
             raise HTTPException(status_code=409, detail="This email id is already registered. Go for login.")
         p = _p()
         otp = _generate_otp()
@@ -253,6 +282,7 @@ def request_registration_otp(payload: RegisterRequest):
             conn.execute(f"INSERT OR REPLACE INTO registration_otps(email,name,password_hash,otp_code,expires_at,created_at) VALUES({p},{p},{p},{p},{p},{p})", (email, payload.name.strip(), _ph(payload.password), otp, _otp_expiry(), now()))
         conn.commit()
     sent = _send_otp_email(email, otp, "registration")
+    _audit("registration_otp_requested", email=email, request=request, outcome="sent" if sent else "dev_generated")
     if not sent and not settings.email_otp_dev_return:
         raise HTTPException(status_code=503, detail="Email OTP delivery is not configured. Set SMTP_HOST/SMTP_USER/SMTP_PASSWORD/SMTP_FROM or enable EMAIL_OTP_DEV_RETURN=true for local development only.")
     resp = {"message": "OTP sent to your email." if sent else "OTP generated in local-dev mode. Configure SMTP for production email delivery.", "email": email, "email_sent": sent}
@@ -262,24 +292,29 @@ def request_registration_otp(payload: RegisterRequest):
 
 
 @router.post("/register/verify", summary="Verify OTP and create account")
-def verify_registration(payload: VerifyRegisterRequest):
+def verify_registration(payload: VerifyRegisterRequest, request: Request):
     email = payload.email.lower().strip()
     otp = payload.otp.strip()
     if not otp:
+        _audit("registration_verify", email=email, request=request, outcome="missing_otp")
         raise HTTPException(status_code=400, detail="OTP is required")
     with get_conn() as conn:
         if _get_user_by_email(conn, email):
+            _audit("registration_verify", email=email, request=request, outcome="already_registered")
             raise HTTPException(status_code=409, detail="This email id is already registered. Go for login.")
         p = _p()
         row = conn.execute(f"SELECT email,name,password_hash,otp_code,expires_at FROM registration_otps WHERE email={p}", (email,)).fetchone()
         if not row:
+            _audit("registration_verify", email=email, request=request, outcome="otp_not_found")
             raise HTTPException(status_code=400, detail="OTP not found. Please generate a new OTP.")
         rec = row_to_dict(row)
         if _is_expired(rec.get("expires_at", "")):
             conn.execute(f"DELETE FROM registration_otps WHERE email={p}", (email,))
             conn.commit()
+            _audit("registration_verify", email=email, request=request, outcome="otp_expired")
             raise HTTPException(status_code=400, detail="OTP expired. Please generate a new OTP.")
         if str(rec.get("otp_code")) != otp:
+            _audit("registration_verify", email=email, request=request, outcome="invalid_otp")
             raise HTTPException(status_code=400, detail="Invalid OTP")
         user_id = __import__('uuid').uuid4().hex
         try:
@@ -289,17 +324,20 @@ def verify_registration(payload: VerifyRegisterRequest):
             user = {"id": user_id, "email": email, "name": rec.get("name", ""), "onboarding_completed": 0}
             resp = _auth_response(conn, user)
             conn.commit()
+            _audit("registration_verify", email=email, user_id=user_id, request=request, outcome="created")
         except Exception as e:
             err = str(e)
             if "UNIQUE" in err.upper() or "unique" in err.lower():
+                _audit("registration_verify", email=email, request=request, outcome="unique_conflict")
                 raise HTTPException(status_code=409, detail="This email id is already registered. Go for login.")
+            _audit("registration_verify", email=email, request=request, outcome="failed")
             raise HTTPException(status_code=400, detail=f"Registration failed: {err}")
     return {**resp, "onboarding_step": "welcome"}
 
 
 @router.post("/register", summary="Create a new account using OTP flow")
-def register(payload: RegisterRequest):
-    return request_registration_otp(payload)
+def register(payload: RegisterRequest, request: Request):
+    return request_registration_otp(payload, request)
 
 
 @router.post("/login", summary="Login and receive access + refresh tokens")
@@ -311,41 +349,48 @@ def login(payload: LoginRequest, request: Request):
         user = row_to_dict(row) if row else {}
         if not row or not verify_password(payload.password, user.get("password_hash", "")):
             _record_failed_login(email, request)
+            _audit("login", email=email, request=request, outcome="invalid_credentials")
             raise HTTPException(status_code=401, detail="Invalid email or password")
         resp = _auth_response(conn, user)
         conn.commit()
     _clear_failed_logins(email, request)
+    _audit("login", email=email, user_id=str(user.get("id", "")), request=request, outcome="success")
     return resp
 
 
 @router.post("/refresh", summary="Rotate refresh token and issue a new access token")
-def refresh(payload: RefreshRequest):
+def refresh(payload: RefreshRequest, request: Request):
     try:
         decoded = jwt.decode(payload.refresh_token, settings.secret_key, algorithms=["HS256"])
         if decoded.get("typ") != "refresh":
             raise ValueError("not a refresh token")
         user_id = decoded.get("sub")
     except Exception:
+        _audit("refresh", request=request, outcome="invalid_token")
         raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
     p = _p()
     with get_conn() as conn:
         row = conn.execute(f"SELECT * FROM refresh_tokens WHERE token={p} AND user_id={p} AND revoked=0 AND expires_at>{p}", (payload.refresh_token, user_id, now())).fetchone()
         if not row:
+            _audit("refresh", user_id=str(user_id or ""), request=request, outcome="revoked_or_expired")
             raise HTTPException(status_code=401, detail="Refresh token expired or revoked")
         user_row = _get_user_by_id(conn, user_id)
         if not user_row:
+            _audit("refresh", user_id=str(user_id or ""), request=request, outcome="user_not_found")
             raise HTTPException(status_code=401, detail="User not found")
         conn.execute(f"UPDATE refresh_tokens SET revoked=1 WHERE token={p}", (payload.refresh_token,))
         resp = _auth_response(conn, row_to_dict(user_row))
         conn.commit()
+    _audit("refresh", user_id=str(user_id or ""), request=request, outcome="rotated")
     return resp
 
 
 @router.post("/password-reset/request-otp", summary="Send password reset OTP")
-def request_password_reset(payload: PasswordResetRequest):
+def request_password_reset(payload: PasswordResetRequest, request: Request):
     email = payload.email.lower().strip()
     with get_conn() as conn:
         if not _get_user_by_email(conn, email):
+            _audit("password_reset_otp_requested", email=email, request=request, outcome="unknown_email")
             return {"message": "If that email exists, a reset OTP has been sent.", "email_sent": False}
         otp = _generate_otp()
         p = _p()
@@ -355,6 +400,7 @@ def request_password_reset(payload: PasswordResetRequest):
             conn.execute(f"INSERT OR REPLACE INTO password_reset_otps(email,otp_code,expires_at,created_at) VALUES({p},{p},{p},{p})", (email, otp, _otp_expiry(), now()))
         conn.commit()
     sent = _send_otp_email(email, otp, "password reset")
+    _audit("password_reset_otp_requested", email=email, request=request, outcome="sent" if sent else "dev_generated")
     resp = {"message": "If that email exists, a reset OTP has been sent.", "email_sent": sent}
     if not sent and settings.email_otp_dev_return:
         resp["otp"] = otp
@@ -362,26 +408,30 @@ def request_password_reset(payload: PasswordResetRequest):
 
 
 @router.post("/password-reset/verify", summary="Verify password reset OTP and set new password")
-def verify_password_reset(payload: PasswordResetVerify):
+def verify_password_reset(payload: PasswordResetVerify, request: Request):
     email = payload.email.lower().strip()
     if len(payload.new_password) < 6:
+        _audit("password_reset_verify", email=email, request=request, outcome="weak_password")
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
     p = _p()
     with get_conn() as conn:
         row = conn.execute(f"SELECT otp_code,expires_at FROM password_reset_otps WHERE email={p}", (email,)).fetchone()
         if not row:
+            _audit("password_reset_verify", email=email, request=request, outcome="otp_not_found")
             raise HTTPException(status_code=400, detail="OTP not found. Please request a new reset OTP.")
         rec = row_to_dict(row)
         if _is_expired(rec.get("expires_at", "")) or str(rec.get("otp_code")) != payload.otp.strip():
+            _audit("password_reset_verify", email=email, request=request, outcome="invalid_or_expired_otp")
             raise HTTPException(status_code=400, detail="Invalid or expired OTP")
         conn.execute(f"UPDATE users SET password_hash={p} WHERE email={p}", (_ph(payload.new_password), email))
         conn.execute(f"DELETE FROM password_reset_otps WHERE email={p}", (email,))
         conn.commit()
+    _audit("password_reset_verify", email=email, request=request, outcome="password_updated")
     return {"message": "Password updated. Please log in."}
 
 
 @router.post("/logout", summary="Invalidate current session token")
-def logout(user=Depends(current_user), authorization: str | None = Header(default=None)):
+def logout(request: Request, user=Depends(current_user), authorization: str | None = Header(default=None)):
     token = authorization.split(" ", 1)[-1].strip() if authorization else ""
     p = _p()
     with get_conn() as conn:
@@ -389,6 +439,7 @@ def logout(user=Depends(current_user), authorization: str | None = Header(defaul
             conn.execute(f"DELETE FROM sessions WHERE token={p}", (token,))
         conn.execute(f"UPDATE refresh_tokens SET revoked=1 WHERE user_id={p}", (user["id"],))
         conn.commit()
+    _audit("logout", email=str(user.get("email", "")), user_id=str(user.get("id", "")), request=request, outcome="success")
     return {"message": "Logged out successfully"}
 
 
