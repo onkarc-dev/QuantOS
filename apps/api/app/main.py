@@ -80,6 +80,12 @@ async def add_process_time_header(request: Request, call_next):
         _error_count += 1
     response.headers["X-Process-Time-Ms"] = str(elapsed_ms)
     response.headers["X-QuantOS-Safe-Mode"] = "paper-backtest-only"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    if settings.enforce_https:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     logger.info("%s %s status=%s elapsed_ms=%s", request.method, request.url.path, response.status_code, elapsed_ms)
     return response
 
