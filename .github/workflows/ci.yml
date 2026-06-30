@@ -8,7 +8,7 @@ on:
 
 jobs:
   backend:
-    name: Backend import sanity
+    name: Backend import and runtime smoke
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -34,6 +34,24 @@ jobs:
 
       - name: Import FastAPI app
         run: PYTHONPATH=. python -c "from app.main import app; print(app.title)"
+
+      - name: Start API and check health/readiness
+        run: |
+          PYTHONPATH=. uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/quantos-api.log 2>&1 &
+          API_PID=$!
+          for i in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:8000/health > /tmp/quantos-health.json; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8000/health
+          curl -fsS http://127.0.0.1:8000/system/readiness
+          kill $API_PID
+
+      - name: Show API logs on failure
+        if: failure()
+        run: cat /tmp/quantos-api.log || true
 
   frontend:
     name: Frontend build
