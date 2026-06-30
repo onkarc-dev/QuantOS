@@ -325,8 +325,10 @@ def run_engine_sync(job_payload: Dict[str, Any]) -> Dict[str, Any]:
         "files": STANDARD_OUTPUTS,
     }
     if status == "completed":
+        trades = read_csv(output_dir / "trade_log.csv")
         response["summary"] = read_json(output_dir / "backtest_summary.json")
-        response["trades"] = read_csv(output_dir / "trade_log.csv")
+        response["trade_count"] = len(trades)
+        response["trades_available"] = True
         response["market_data"] = job_payload.get("market_data", {})
         response["symbols"] = symbols
         response["real_binance_data_used"] = bool(job_payload.get("real_binance_data_used"))
