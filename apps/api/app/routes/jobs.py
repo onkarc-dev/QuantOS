@@ -99,20 +99,30 @@ def list_jobs(user=Depends(current_user)):
     p = _p()
     with get_conn() as conn:
         rows = conn.execute(
-            f"SELECT * FROM jobs WHERE user_id={p} ORDER BY created_at DESC LIMIT 20",
-            (user["id"],)
+            f"""
+            SELECT j.*, s.config_json AS strategy_config_json
+            FROM jobs j
+            LEFT JOIN strategies s
+              ON s.id = j.strategy_id
+             AND s.user_id = j.user_id
+            WHERE j.user_id={p}
+            ORDER BY j.created_at DESC
+            LIMIT 20
+            """,
+            (user["id"],),
         ).fetchall()
-        jobs = [row_to_dict(r) for r in rows]
-        # Add a clean user-facing Strategy ID for the UI. The internal DB UUID is kept as id only.
-        for j in jobs:
+        jobs = []
+        for row in rows:
+            j = row_to_dict(row)
+            strategy_config_json = j.pop("strategy_config_json", None)
             j["display_strategy_id"] = j.get("strategy_id")
-            try:
-                sr = conn.execute(f"SELECT config_json FROM strategies WHERE id={p} AND user_id={p}", (j.get("strategy_id"), user["id"])).fetchone()
-                if sr:
-                    cfg = json.loads(sr["config_json"] if hasattr(sr, "keys") else sr[0])
+            if strategy_config_json:
+                try:
+                    cfg = json.loads(strategy_config_json)
                     j["display_strategy_id"] = cfg.get("user_strategy_id") or cfg.get("strategy_id") or j.get("strategy_id")
-            except Exception:
-                pass
+                except Exception:
+                    pass
+            jobs.append(j)
     return {"jobs": jobs}
 
 
