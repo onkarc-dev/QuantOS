@@ -24,7 +24,7 @@ def _score(value: float, lo: float, hi: float, invert: bool = False) -> float:
     return round(x * 100, 2)
 
 
-def build_strategy_health_score(trades: list[dict[str, Any]], journal_entries: list[dict[str, Any]] | None = None, benchmark_returns: list[float] | None = None) -> dict[str, Any]:
+def build_strategy_health_score(trades: list[dict[str, Any]], journal_entries: list[dict[str, Any]] | None = None, benchmark_returns: list[float] | None = None, risk_per_trade_pct: float | None = None) -> dict[str, Any]:
     r = [_f(t.get('r_multiple', t.get('r', t.get('pnl', 0)))) for t in trades]
     n = len(r)
     wins = [x for x in r if x > 0]
@@ -68,7 +68,7 @@ def build_strategy_health_score(trades: list[dict[str, Any]], journal_entries: l
     for j in mistakes:
         key = str(j.get('rule_broken') or j.get('mistake_tag'))
         repeated[key] = repeated.get(key, 0) + 1
-    pr = build_performance_and_robustness(trades, profit_factor=(gross_profit / gross_loss) if gross_loss else None)
+    pr = build_performance_and_robustness(trades, profit_factor=(gross_profit / gross_loss) if gross_loss else None, risk_per_trade_pct=risk_per_trade_pct)
     sharpe = pr['risk_adjusted']['sharpe']
     sortino = pr['risk_adjusted']['sortino']
     calmar = pr['risk_adjusted']['calmar']

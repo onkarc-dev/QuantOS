@@ -168,6 +168,7 @@ async def upload_csv(file: UploadFile = File(...), user=Depends(current_user)):
         end_time=rows[-1]['timestamp'],
         bars_processed=len(rows),
         profit_factor=(gross_win / gross_loss) if gross_loss else None,
+        risk_per_trade_pct=None,
         source_note='CSV upload uses close-to-close point changes as an R proxy because no explicit entry, stop, risk, or capital data is available.',
     )
     result_path = output_dir / 'quantos_csv_upload_result.json'

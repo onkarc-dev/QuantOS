@@ -127,6 +127,7 @@ export default function StrategyBuilder() {
   const [runProgress, setRunProgress] = useState("");
   const [startDate, setStartDate] = useState(startIso());
   const [endDate, setEndDate] = useState(yesterdayIso());
+  const heavyLowTimeframe = cfg.symbols.length > 3 && timeframeToSeconds(cfg.timeframe) <= 5;
   function upd(k: keyof Cfg, v: any) {
     setCfg({ ...cfg, [k]: v });
   }
@@ -227,7 +228,7 @@ export default function StrategyBuilder() {
       setRunning(true);
       setRunProgress(
         selectedSymbols.length > 1
-          ? `Symbol 1 / ${selectedSymbols.length}. Running ${selectedSymbols[0]}... Multi-symbol backtests can take longer.`
+          ? `Running multi-symbol backtest. This may take longer. Completed 0 / ${selectedSymbols.length} selected symbols.`
           : `Running ${selectedSymbols[0] || "selected symbol"}...`,
       );
       setMsg("Submitting backtest...");
@@ -392,6 +393,11 @@ export default function StrategyBuilder() {
             market set; live paper can activate one, many, or all selected
             symbols.
           </p>
+          {heavyLowTimeframe && (
+            <p style={{ color: "#fbbf24", fontSize: 12, marginTop: 8 }}>
+              Multi-symbol low-timeframe backtests are heavy. Prefer local backend or fewer symbols.
+            </p>
+          )}
         </div>
         <div className="row" style={{ marginTop: 16 }}>
           <label>
@@ -814,7 +820,8 @@ function BacktestResult({ job, pollJob }: { job: any; pollJob: any }) {
           <Kpi label="Expectancy" value={metric(ex.expectancy_R_per_trade, "R")} color={signedClass(ex.expectancy_R_per_trade)} />
           <Kpi label="Avg Winner / Loser" value={`${metric(ex.average_winner_R, "R")} / ${metric(ex.average_loser_R, "R")}`} />
           <Kpi label="Largest Winner / Loser" value={`${metric(ex.largest_winner_R, "R")} / ${metric(ex.largest_loser_R, "R")}`} />
-          <Kpi label="Turnover %" value={tb.turnover_display || "Not enough data"} />
+          <Kpi label="Real Notional Turnover %" value={tb.turnover_display || "Not enough data"} />
+          <Kpi label="Estimated Turnover Proxy %" value={tb.turnover_proxy_display || "Not enough data"} />
           <Kpi label="Trades / Day" value={metric(tb.trades_per_day)} />
           <Kpi label="Exposure %" value={tb.exposure_display || "Not enough data"} />
           <Kpi label="Max Win / Loss Streak" value={`${risk.max_consecutive_wins ?? 0} / ${risk.max_consecutive_losses ?? 0}`} />
@@ -822,7 +829,7 @@ function BacktestResult({ job, pollJob }: { job: any; pollJob: any }) {
           <Kpi label="Overfitting Risk" value={`${robust.overfitting_risk_label || "Not enough data"} ${robust.overfitting_risk_score ?? ""}`} />
         </div>
         <p className="muted" style={{ marginTop: 10 }}>
-          Ratios require enough R-multiple dispersion. Turnover is estimated when full notional data is unavailable.
+          Ratios require enough R-multiple dispersion. Real turnover needs notional and equity data. The proxy is a risk-based activity estimate, not real notional turnover.
         </p>
         {warnings.length > 0 && (
           <ul className="muted" style={{ lineHeight: 1.7 }}>

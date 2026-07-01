@@ -82,4 +82,11 @@ def strategy_health(job_id: str, user=Depends(current_user)):
         raise HTTPException(status_code=404, detail="Job not found")
     output_dir = Path(row_to_dict(row).get("output_dir", ""))
     trades = read_csv(output_dir / "trade_log.csv")
-    return build_strategy_health_score(trades)
+    risk_per_trade_pct = None
+    try:
+        cfg = json.loads((output_dir / "strategy_config.json").read_text(encoding="utf-8"))
+        risk = ((cfg.get("config") or {}).get("risk") or {}) if isinstance(cfg, dict) else {}
+        risk_per_trade_pct = float(risk.get("risk_per_trade_pct"))
+    except Exception:
+        risk_per_trade_pct = None
+    return build_strategy_health_score(trades, risk_per_trade_pct=risk_per_trade_pct)

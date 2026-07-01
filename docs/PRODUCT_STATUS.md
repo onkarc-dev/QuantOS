@@ -10,7 +10,7 @@ Status date: 2026-07-01.
 - `/beta-status` shows the visible beta readiness surface in the web app.
 - CSV upload backtest is available at `POST /backtests/upload-csv`.
 - Strategy Health Score is available through Quant Coach routes, and Quant Coach now displays professional performance, risk-adjusted, drawdown, trading-behavior, and robustness sections.
-- Backtest reports now include `performance_and_robustness` with Sharpe, Sortino, Calmar, Omega, Recovery Factor, expectancy, drawdown, turnover/exposure estimates, formatted turnover percentage display, and heuristic overfitting risk when enough data exists.
+- Backtest reports now include `performance_and_robustness` with Sharpe, Sortino, Calmar, Omega, Recovery Factor, expectancy, drawdown, real notional turnover when notional/equity data exists, estimated turnover proxy when configured risk exists, exposure estimates, and heuristic overfitting risk when enough data exists.
 - Analytics graphs are restored for equity curve, drawdown curve, R-multiple distribution, and wins/losses, with the equity table retained below the charts.
 - AI Backtest Explainer fallback is available without an external AI key.
 - Local Engine Bridge is available through `POST /engine/token`, `POST /engine/heartbeat`, and `GET /engine/status`.
@@ -53,6 +53,7 @@ Status date: 2026-07-01.
 - Turnover is estimated when full notional/quantity/price data is unavailable.
 - Turnover is displayed to users as a percentage estimate through `turnover_display`; the raw estimate remains available as `turnover_raw`.
 - Multi-symbol backtests can take longer than BTC-only runs. The Strategy Builder disables duplicate submissions and shows a clear running state while the backend works at job-level progress granularity.
+- Hosted production/Render API blocks very heavy multi-symbol low-timeframe jobs with a 422 response so the free instance does not run out of memory. Local development remains allowed for heavier backtests.
 
 ## Readiness scores
 
@@ -63,8 +64,8 @@ Status date: 2026-07-01.
 ## Local URLs
 
 - Frontend: `http://127.0.0.1:3000`
-- Backend health: `http://127.0.0.1:8000/health`
-- Backend docs: `http://127.0.0.1:8000/docs`
+- Backend health: `http://127.0.0.1:8010/health`
+- Backend docs: `http://127.0.0.1:8010/docs`
 - Beta status: `http://127.0.0.1:3000/beta-status`
 - Charting: `http://127.0.0.1:3000/charting`
 - Engine connection: `http://127.0.0.1:3000/engine-connection`

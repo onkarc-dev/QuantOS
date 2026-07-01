@@ -162,7 +162,7 @@ class Settings:
 
     @property
     def live_paper_binary(self) -> Path:
-        override = os.getenv("LIVE_PAPER_BINARY_PATH", "").strip()
+        override = os.getenv("QUANTOS_LIVE_PAPER_BINARY", os.getenv("LIVE_PAPER_BINARY_PATH", "")).strip()
         if override:
             p = Path(override)
             return p if p.is_absolute() else self.project_root / p
@@ -172,11 +172,12 @@ class Settings:
                 self.project_root / "build" / "Release" / "prism_live_paper_trading.exe",
                 self.project_root / "build" / "prism_live_paper_trading.exe",
             ])
-        candidates.extend([
-            Path("/app/build/Release/prism_live_paper_trading"),
-            self.project_root / "build" / "Release" / "prism_live_paper_trading",
-            self.project_root / "build" / "prism_live_paper_trading",
-        ])
+        if not sys.platform.startswith("win"):
+            candidates.append(Path("/app/build/Release/prism_live_paper_trading"))
+            candidates.extend([
+                self.project_root / "build" / "Release" / "prism_live_paper_trading",
+                self.project_root / "build" / "prism_live_paper_trading",
+            ])
         return next((p for p in candidates if p.exists()), candidates[0])
 
     def is_postgres(self) -> bool:

@@ -130,6 +130,7 @@ def build_performance_and_robustness(
     end_time: Any = None,
     bars_processed: int | None = None,
     profit_factor: float | None = None,
+    risk_per_trade_pct: float | None = None,
     has_walk_forward: bool = False,
     has_out_of_sample: bool = False,
     parameter_sensitivity: Any = None,
@@ -158,7 +159,9 @@ def build_performance_and_robustness(
     max_wins, max_losses = _streaks(r)
     span_days = _date_span_days(trades, start_time, end_time)
     holding = [_f(t.get("holding_bars")) for t in trades if _f(t.get("holding_bars")) is not None]
-    notionals = []
+    real_notionals: list[float] = []
+    real_turnover_percentages: list[float] = []
+    has_complete_notional_turnover = bool(n)
     for t in trades:
         notional = _f(t.get("notional"))
         if notional is None:
@@ -166,10 +169,20 @@ def build_performance_and_robustness(
             price = _f(t.get("price", t.get("entry_price")))
             if qty is not None and price is not None:
                 notional = abs(qty * price)
-        if notional is not None:
-            notionals.append(abs(notional))
-    turnover_estimate = sum(notionals) if notionals else (n * (mean(holding) if holding else 1.0) if n else None)
-    turnover_percentage = turnover_estimate
+        equity = _f(t.get("account_equity", t.get("equity", t.get("starting_equity"))))
+        if notional is None or equity is None or equity <= 0:
+            has_complete_notional_turnover = False
+            continue
+        real_notionals.append(abs(notional))
+        real_turnover_percentages.append(abs(notional) / equity * 100.0)
+    turnover_raw = sum(real_notionals) if has_complete_notional_turnover and real_notionals else None
+    turnover_percentage = sum(real_turnover_percentages) if has_complete_notional_turnover and real_turnover_percentages else None
+    turnover_proxy_pct = (n * risk_per_trade_pct * 2.0) if n and risk_per_trade_pct is not None and math.isfinite(risk_per_trade_pct) else None
+    turnover_explanation = (
+        "Real Notional Turnover % uses actual trade notional divided by account equity. "
+        "Estimated Turnover Proxy % is a risk-based activity estimate: total trades x risk per trade % x 2. "
+        "The proxy is not real notional turnover."
+    )
     exposure = (sum(holding) / float(bars_processed)) if holding and bars_processed else None
     exposure_percentage = exposure * 100 if exposure is not None else None
     trades_per_day = (n / span_days) if span_days else None
@@ -182,8 +195,8 @@ def build_performance_and_robustness(
         warnings.append("Extreme profit factor may indicate overfitting or too few losses.")
     if trades_per_day is not None and trades_per_day > 50:
         warnings.append("Excessive trades per day may indicate overtrading.")
-    if turnover_estimate is not None and n and turnover_estimate / max(n, 1) > 100:
-        warnings.append("High turnover estimate; validate fees and slippage before relying on results.")
+    if turnover_proxy_pct is not None and turnover_proxy_pct > 500:
+        warnings.append("High turnover proxy; validate fees and slippage before relying on results.")
     if not has_out_of_sample:
         warnings.append("No out-of-sample validation is available yet.")
     if not has_walk_forward:
@@ -238,11 +251,14 @@ def build_performance_and_robustness(
         },
         "trading_behavior": {
             "trades_per_day": _round(trades_per_day),
-            "turnover_raw": _round(turnover_estimate),
+            "turnover_raw": _round(turnover_raw),
             "turnover_percentage": _round(turnover_percentage),
             "turnover_display": _display_percent(turnover_percentage),
-            "turnover_estimate": _round(turnover_estimate),
-            "turnover_estimate_note": "Estimated from notional where present; otherwise from trade count and holding bars.",
+            "turnover_proxy_pct": _round(turnover_proxy_pct),
+            "turnover_proxy_display": _display_percent(turnover_proxy_pct),
+            "turnover_explanation": turnover_explanation,
+            "turnover_estimate": _round(turnover_proxy_pct),
+            "turnover_estimate_note": "Risk-based activity estimate only; not real notional turnover.",
             "exposure_estimate": _round(exposure),
             "exposure_percentage": _round(exposure_percentage),
             "exposure_display": _display_percent(exposure_percentage),

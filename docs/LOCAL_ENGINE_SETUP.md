@@ -12,6 +12,16 @@ ctest --test-dir build -C Release --output-on-failure
 
 Current local result: C++ configure/build passed and `ctest` passed 6/6.
 
+## Local web/backend development
+
+For local development create `apps/web/.env.local` containing:
+
+```bash
+NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8010
+```
+
+Then restart `npm run dev`. Production builds can still use the Render API fallback or an explicit deployed API URL.
+
 ## Useful targets
 
 - `quantos-engine`: local bridge/heartbeat CLI.
@@ -36,6 +46,8 @@ If the binary is missing, the API returns the resolved repo root, every checked 
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release --target prism_live_paper_trading
 ```
+
+Set `QUANTOS_LIVE_PAPER_BINARY` to override binary detection when using a custom local build path.
 
 ## Connect
 

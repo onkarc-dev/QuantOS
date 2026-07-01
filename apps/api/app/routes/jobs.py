@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel
@@ -13,6 +15,12 @@ from app.services.job_queue import queue, JobStatus
 from app.services.engine_runner import run_engine_sync
 
 router = APIRouter()
+
+HOSTED_HEAVY_BACKTEST_MESSAGE = (
+    "This backtest is too heavy for the hosted free API. "
+    "Run locally or reduce symbols/timeframe."
+)
+HOSTED_ROW_THRESHOLD = 250_000
 
 
 class BacktestPayload(BaseModel):
@@ -26,6 +34,45 @@ class BacktestPayload(BaseModel):
 
 def _p() -> str:
     return "%s" if settings.is_postgres() else "?"
+
+
+def _timeframe_seconds(timeframe: str) -> int:
+    m = re.match(r"^(\d+)([smh])$", str(timeframe or "1m").strip().lower())
+    if not m:
+        return 60
+    n = int(m.group(1))
+    return n if m.group(2) == "s" else n * 60 if m.group(2) == "m" else n * 3600
+
+
+def _hosted_guard_enabled() -> bool:
+    return bool(settings.is_prod or os.getenv("RENDER", "").strip().lower() in {"1", "true", "yes"})
+
+
+def estimate_backtest_rows(symbol_count: int, timeframe: str, start_date: str | None, end_date: str | None) -> int | None:
+    if not start_date:
+        return None
+    from datetime import date
+
+    try:
+        start = date.fromisoformat(start_date)
+        end = date.fromisoformat(end_date or start_date)
+    except Exception:
+        return None
+    days = max((end - start).days + 1, 1)
+    seconds = max(_timeframe_seconds(timeframe), 1)
+    return int(days * 86400 / seconds) * max(symbol_count, 1)
+
+
+def heavy_backtest_reason(payload: BacktestPayload) -> str | None:
+    symbols = [s for s in payload.symbols if str(s).strip()]
+    symbol_count = len(symbols) or 1
+    low_timeframe = _timeframe_seconds(payload.timeframe) <= 5
+    rows_estimate = estimate_backtest_rows(symbol_count, payload.timeframe, payload.start_date, payload.end_date)
+    if symbol_count > 3 and low_timeframe:
+        return HOSTED_HEAVY_BACKTEST_MESSAGE
+    if rows_estimate is not None and rows_estimate > HOSTED_ROW_THRESHOLD:
+        return HOSTED_HEAVY_BACKTEST_MESSAGE
+    return None
 
 
 def _insert_queued_job(job_id: str, user_id: str, payload: BacktestPayload) -> None:
@@ -54,6 +101,11 @@ def _insert_queued_job(job_id: str, user_id: str, payload: BacktestPayload) -> N
 @router.post("/submit-backtest", summary="Submit a backtest job (async)")
 def submit_backtest(payload: BacktestPayload, user=Depends(current_user)):
     """Queue a backtest job. Returns immediately with job ID. Use /jobs/{id} to poll."""
+    if _hosted_guard_enabled():
+        reason = heavy_backtest_reason(payload)
+        if reason:
+            raise HTTPException(status_code=422, detail=reason)
+
     job_id = str(uuid.uuid4())
     job_payload = {
         "job_id": job_id,

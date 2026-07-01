@@ -70,10 +70,33 @@ def test_no_walk_forward_and_out_of_sample_warnings():
     assert any("No out-of-sample" in w for w in out["warnings"])
 
 
-def test_turnover_display_exposes_raw_percentage_and_percent_text():
-    out = build_performance_and_robustness([t(0.5, holding=2), t(-0.2, holding=4)])
+def test_turnover_display_keeps_real_notional_null_without_notional_and_equity():
+    out = build_performance_and_robustness([t(0.5, holding=2), t(-0.2, holding=4)], risk_per_trade_pct=1)
     behavior = out["trading_behavior"]
-    assert behavior["turnover_raw"] == 6
-    assert behavior["turnover_percentage"] == 6
-    assert behavior["turnover_display"] == "6%"
-    assert behavior["turnover_display"].endswith("%")
+    assert behavior["turnover_raw"] is None
+    assert behavior["turnover_percentage"] is None
+    assert behavior["turnover_display"] == "Not enough data"
+    assert behavior["turnover_proxy_pct"] == 4
+    assert behavior["turnover_proxy_display"] == "4%"
+
+
+def test_turnover_proxy_uses_trade_count_and_risk_percent():
+    out = build_performance_and_robustness([t(0.2) for _ in range(250)], risk_per_trade_pct=1)
+    behavior = out["trading_behavior"]
+    assert behavior["turnover_percentage"] is None
+    assert behavior["turnover_display"] == "Not enough data"
+    assert behavior["turnover_proxy_pct"] == 500
+    assert behavior["turnover_proxy_display"] == "500%"
+
+
+def test_real_notional_turnover_requires_complete_notional_and_equity():
+    trades = [
+        {"r_multiple": 1, "qty": 2, "price": 100, "account_equity": 10000},
+        {"r_multiple": -1, "notional": 300, "account_equity": 10000},
+    ]
+    out = build_performance_and_robustness(trades, risk_per_trade_pct=1)
+    behavior = out["trading_behavior"]
+    assert behavior["turnover_raw"] == 500
+    assert behavior["turnover_percentage"] == 5
+    assert behavior["turnover_display"] == "5%"
+    assert behavior["turnover_proxy_display"] == "4%"

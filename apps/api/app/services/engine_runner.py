@@ -52,6 +52,17 @@ def _p() -> str:
     return "%s" if settings.is_postgres() else "?"
 
 
+def _risk_per_trade_pct(job_payload: Dict[str, Any]) -> float | None:
+    config = job_payload.get("config") if isinstance(job_payload.get("config"), dict) else {}
+    risk = config.get("risk") if isinstance(config.get("risk"), dict) else {}
+    raw = risk.get("risk_per_trade_pct")
+    try:
+        value = float(raw)
+        return value if value >= 0 else None
+    except Exception:
+        return None
+
+
 def create_job_folder(user_id: str, job_id: str) -> Path:
     out = settings.outputs_dir / user_id / job_id
     out.mkdir(parents=True, exist_ok=True)
@@ -147,6 +158,7 @@ def insert_outputs(job_payload: Dict[str, Any], job_id: str, output_dir: Path):
             end_time=job_payload.get("end_date"),
             bars_processed=summary.get("bars_processed"),
             profit_factor=summary.get("profit_factor"),
+            risk_per_trade_pct=_risk_per_trade_pct(job_payload),
         )
         (output_dir / "backtest_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     validation = read_json(output_dir / "setup_validation_report.json")
@@ -344,6 +356,7 @@ def run_engine_sync(job_payload: Dict[str, Any]) -> Dict[str, Any]:
                 end_time=job_payload.get("end_date"),
                 bars_processed=response["summary"].get("bars_processed"),
                 profit_factor=response["summary"].get("profit_factor"),
+                risk_per_trade_pct=_risk_per_trade_pct(job_payload),
             )
         response["trade_count"] = len(trades)
         response["trades_available"] = True

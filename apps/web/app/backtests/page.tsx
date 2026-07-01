@@ -25,13 +25,14 @@ function PerformanceRobustness({data}:{data:any}){
     <div><b>Expectancy R/trade</b><div className="metric">{metric(ex.expectancy_R_per_trade,'R')}</div></div>
     <div><b>Avg Winner / Loser</b><div className="metric">{metric(ex.average_winner_R,'R')} / {metric(ex.average_loser_R,'R')}</div></div>
     <div><b>Largest Winner / Loser</b><div className="metric">{metric(ex.largest_winner_R,'R')} / {metric(ex.largest_loser_R,'R')}</div></div>
-    <div><b>Turnover %</b><div className="metric">{tb.turnover_display || 'Not enough data'}</div></div>
+    <div><b>Real Notional Turnover %</b><div className="metric">{tb.turnover_display || 'Not enough data'}</div></div>
+    <div><b>Estimated Turnover Proxy %</b><div className="metric">{tb.turnover_proxy_display || 'Not enough data'}</div></div>
     <div><b>Trades/day</b><div className="metric">{metric(tb.trades_per_day)}</div></div>
     <div><b>Exposure %</b><div className="metric">{tb.exposure_display || 'Not enough data'}</div></div>
     <div><b>Max Wins/Losses</b><div className="metric">{risk.max_consecutive_wins ?? 0} / {risk.max_consecutive_losses ?? 0}</div></div>
     <div><b>Ulcer Index</b><div className="metric">{metric(risk.ulcer_index)}</div></div>
     <div><b>Overfitting Risk</b><div className="metric">{robust.overfitting_risk_label || 'Not enough data'} {robust.overfitting_risk_score ?? ''}</div></div>
-  </div><p className="muted">Ratios require enough R-multiple dispersion. Turnover is estimated when full notional data is unavailable.</p>{warnings.length>0&&<ul className="muted" style={{lineHeight:1.7}}>{warnings.map((w:string)=><li key={w}>{w}</li>)}</ul>}</div>
+  </div><p className="muted">Ratios require enough R-multiple dispersion. Real turnover needs notional and equity data. The proxy is a risk-based activity estimate, not real notional turnover.</p>{warnings.length>0&&<ul className="muted" style={{lineHeight:1.7}}>{warnings.map((w:string)=><li key={w}>{w}</li>)}</ul>}</div>
 }
 
 export default function Backtests(){

@@ -12,7 +12,7 @@ Date: 2026-07-01.
 | Backend venv | `cd apps/api && py -3.12 -m venv .venv` | PASS |
 | Backend tooling | `python -m pip install --upgrade pip setuptools wheel` | PASS |
 | Backend dependencies | `pip install -r requirements.txt` | PASS |
-| Backend tests | `python -m pytest ..\..\tests tests` | PASS, 97 tests |
+| Backend tests | `python -m pytest ..\..\tests tests` | PASS, includes turnover proxy, notional turnover null behavior, hosted backtest guard, and live-paper binary diagnostics |
 | C++ configure | `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release` | PASS |
 | C++ build | `cmake --build build --config Release -j2` | PASS |
 | C++ tests | `ctest --test-dir build -C Release --output-on-failure` | PASS, 6/6 |
@@ -32,7 +32,7 @@ Date: 2026-07-01.
 - strategy health score through Quant Coach
 - `performance_and_robustness` existence after CSV upload/backtest
 - overfitting risk, Sharpe/Sortino/Calmar keys, and warnings list
-- turnover display shape: raw value, percent-like numeric value, and percent text
+- turnover display shape: real notional turnover remains `Not enough data` without notional/equity, and risk-based proxy displays percent text when configured risk exists
 - AI explainer fallback
 - `/engine/token`
 - `/engine/heartbeat`
@@ -52,8 +52,9 @@ The script prints clear `PASS`/`FAIL` lines for each step.
 - Full adapter-owned live socket loop is still partial.
 - Real-money trading remains disabled.
 - Live paper local-engine integration supports Windows and Linux/Docker binary paths and remains paper-only with no real broker orders.
-- Backtest metrics now cover Sharpe, Sortino, Calmar, Recovery Factor, expectancy, estimated turnover, and overfitting risk. Ratio values are `null` when the available R-multiple data is insufficient.
+- Backtest metrics now cover Sharpe, Sortino, Calmar, Recovery Factor, expectancy, real notional turnover when supported by notional/equity data, estimated turnover proxy, and overfitting risk. Ratio values are `null` when the available R-multiple data is insufficient.
 - Quant Coach now exposes the professional robustness metrics, and Analytics restores equity, drawdown, distribution, and wins/losses graphs from report data.
-- Turnover is displayed as a percentage estimate in the UI through `turnover_display`, while raw turnover remains available for diagnostics.
+- Real Notional Turnover % and Estimated Turnover Proxy % are displayed separately. The proxy is approximate and risk-based; real turnover is not faked when notional/equity data is missing.
+- Production/Render heavy backtest safety guard is covered by tests and returns a clear 422 response for hosted jobs that are too large for the free API.
 - Multi-symbol backtests can take longer than single-symbol runs; the UI disables repeat submissions and reports job-level progress while the backend runs.
 - Walk-forward, out-of-sample validation, and parameter sensitivity are placeholders until implemented.

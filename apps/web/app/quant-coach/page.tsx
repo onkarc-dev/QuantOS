@@ -135,7 +135,8 @@ export default function QuantCoach() {
       <Section title="Trading Behaviour">
         <Metric label="Trades" value={fmt(trades, '', 0)} />
         <Metric label="Trades/day" value={fmt(tb.trades_per_day)} />
-        <Metric label="Turnover %" value={tb.turnover_display || 'Not enough data'} />
+        <Metric label="Real Notional Turnover %" value={tb.turnover_display || 'Not enough data'} />
+        <Metric label="Estimated Turnover Proxy %" value={tb.turnover_proxy_display || 'Not enough data'} />
         <Metric label="Exposure %" value={tb.exposure_display || 'Not enough data'} />
         <Metric label="Average Holding" value={fmt(tb.average_holding_bars, ' bars')} />
         <Metric label="Median Holding" value={fmt(tb.median_holding_bars, ' bars')} />

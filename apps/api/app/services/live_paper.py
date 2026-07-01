@@ -15,6 +15,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -114,10 +115,11 @@ def _candidate_live_binary_paths(project_root: Path, override: str = "") -> List
 
 def resolve_live_paper_binary(project_root: Path | None = None, override: str | None = None) -> Dict[str, Any]:
     root = project_root or settings.project_root
-    raw_override = os.getenv("LIVE_PAPER_BINARY_PATH", "") if override is None else override
+    raw_override = os.getenv("QUANTOS_LIVE_PAPER_BINARY", os.getenv("LIVE_PAPER_BINARY_PATH", "")) if override is None else override
     candidates = _candidate_live_binary_paths(root, raw_override.strip())
     selected = next((p for p in candidates if p.exists()), None)
     return {
+        "detected_platform": sys.platform,
         "repo_root": str(root),
         "checked_paths": [_path_for_display(p) for p in candidates],
         "selected_binary_path": str(selected) if selected else None,

@@ -1,7 +1,17 @@
-export const API_BASE =
+const configuredApiBase =
+  process.env.NEXT_PUBLIC_API_BASE_URL ||
   process.env.NEXT_PUBLIC_API_URL ||
-  process.env.NEXT_PUBLIC_API_BASE ||
-  'https://quantos-api.onrender.com';
+  process.env.NEXT_PUBLIC_API_BASE;
+
+export const API_BASE =
+  configuredApiBase ||
+  (process.env.NODE_ENV === 'production'
+    ? 'https://quantos-api.onrender.com'
+    : 'http://127.0.0.1:8010');
+
+if (process.env.NODE_ENV === 'development') {
+  console.info(`QuantOS API base: ${API_BASE}`);
+}
 
 const TOKEN_KEY = 'prismflow_token';
 const USER_KEY = 'prismflow_user';

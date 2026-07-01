@@ -26,6 +26,20 @@ def test_live_binary_resolution_windows_style_path(tmp_path):
     assert out["binary_found"] is True
     assert out["selected_binary_path"] == str(binary)
     assert str(binary) in out["checked_paths"]
+    assert out["detected_platform"]
+
+
+def test_live_binary_resolution_uses_quantos_override(tmp_path, monkeypatch):
+    binary = tmp_path / "custom" / "prism_live_paper_trading.exe"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("stub", encoding="utf-8")
+    monkeypatch.setenv("QUANTOS_LIVE_PAPER_BINARY", str(binary))
+
+    out = resolve_live_paper_binary(tmp_path)
+
+    assert out["binary_found"] is True
+    assert out["selected_binary_path"] == str(binary)
+    assert out["checked_paths"] == [str(binary)]
 
 
 def test_live_binary_resolution_hides_docker_path_on_windows(tmp_path, monkeypatch):
