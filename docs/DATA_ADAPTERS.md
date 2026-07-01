@@ -21,7 +21,9 @@ C++ adapters live under `cpp_engine/src/adapters/MarketDataAdapter.hpp` and norm
 
 ## Binance scope
 
-The Binance adapter foundation is available, but full adapter-owned network streaming is not claimed yet. The current implementation provides the public URL and trade parser/local ingestion foundation. Real socket-loop capture remains partial.
+The Binance adapter foundation is available for public feed data. Live paper uses Binance public trade data only and remains paper-only. The cloud must not receive Binance API keys, broker credentials, or private account data.
+
+The backend can launch the local C++ live paper binary from Windows paths such as `build\Release\prism_live_paper_trading.exe` or Linux/Docker paths such as `/app/build/Release/prism_live_paper_trading`. The process reports safe local telemetry through parseable stdout heartbeats.
 
 ## Cloud sync allow-list
 
@@ -35,9 +37,10 @@ The engine bridge accepts only safe telemetry/results:
 - P&L
 - risk status
 - logs
+- live paper heartbeat fields: selected symbol, latest price, paper equity, cash, unrealized P&L, open position quantity, trade count, and latency
 
 Payloads outside that allow-list are discarded by the bridge service.
 
 ## Trading safety
 
-Real-money trading is disabled. QuantOS remains paper trading and backtesting only.
+Real-money trading is disabled. QuantOS remains paper trading and backtesting only. No real broker orders are placed.

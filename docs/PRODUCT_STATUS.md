@@ -13,6 +13,7 @@ Status date: 2026-07-01.
 - Backtest reports now include `performance_and_robustness` with Sharpe, Sortino, Calmar, Recovery Factor, expectancy, drawdown, turnover/exposure estimates, and heuristic overfitting risk when enough data exists.
 - AI Backtest Explainer fallback is available without an external AI key.
 - Local Engine Bridge is available through `POST /engine/token`, `POST /engine/heartbeat`, and `GET /engine/status`.
+- Live Paper Trading detects Windows, Linux, and Docker C++ binary paths and exposes safe process/feed diagnostics to the UI.
 - C++ local engine build passed, including `quantos-engine`, `prism_backtest`, paper targets, and available tests.
 - `ctest` passed 6/6.
 - `scripts/smoke_quantos.py` passed the full local backend smoke flow.
@@ -26,6 +27,7 @@ Status date: 2026-07-01.
 - Binance adapter foundation exists with the public trade WebSocket URL and a parser for Binance public `@trade` payloads.
 - Full real Binance live streaming is still partial: the reusable adapter foundation exists, but a complete production socket loop for that adapter is not claimed here.
 - Live paper targets can build in environments where optional WebSocket dependencies are available; real-money broker execution is still prohibited.
+- Live paper starts the local `prism_live_paper_trading` process only in managed paper mode, never passes API secrets, and reads safe `QUANTOS_HEARTBEAT` telemetry when emitted.
 
 ## Test/build results
 
@@ -33,7 +35,7 @@ Status date: 2026-07-01.
 - PASS: `cd apps/web && npm test`
 - PASS: `cd apps/web && npm run build`
 - PASS: Python 3.12 backend dependency install from `apps/api/requirements.txt`
-- PASS: backend tests: `92 passed`
+- PASS: backend tests: `97 passed`
 - PASS: `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release`
 - PASS: `cmake --build build --config Release -j2`
 - PASS: `ctest --test-dir build -C Release --output-on-failure` - 6/6 passed
@@ -43,6 +45,7 @@ Status date: 2026-07-01.
 
 - Binance public adapter: URL and trade parser foundation are available; full adapter-owned network loop remains partial.
 - Local WebSocket capture/download backtest remains a local-engine path and depends on completing the network capture loop.
+- If no C++ live-paper heartbeat has arrived yet, the UI reports `waiting_for_heartbeat` or `waiting_for_feed` instead of fake live values.
 - Production deployment still needs managed Postgres/Redis, observability, backups, and environment-specific hardening.
 - Docker/compose validation depends on Docker being installed locally.
 - Turnover is estimated when full notional/quantity/price data is unavailable.
@@ -61,4 +64,5 @@ Status date: 2026-07-01.
 - Beta status: `http://127.0.0.1:3000/beta-status`
 - Charting: `http://127.0.0.1:3000/charting`
 - Engine connection: `http://127.0.0.1:3000/engine-connection`
+- Paper trading: `http://127.0.0.1:3000/paper-trading`
 - Backtests: `http://127.0.0.1:3000/backtests`

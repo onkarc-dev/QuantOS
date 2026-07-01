@@ -82,7 +82,9 @@ def create_engine_token(user_id: str, mode: str = "paper", exchange: str = "bina
     return {
         "token": token,
         "expires_at_epoch": int(expires_at),
-        "command": f"quantos-engine --token {token} --mode {mode} --exchange {exchange} --symbol {source}",
+        "command": f"build\\Release\\quantos-engine.exe --token {token} --mode {mode} --exchange {exchange} --symbol {source}",
+        "windows_command": f"build\\Release\\quantos-engine.exe --token {token} --mode {mode} --exchange {exchange} --symbol {source}",
+        "linux_command": f"./build/quantos-engine --token {token} --mode {mode} --exchange {exchange} --symbol {source}",
         "safe_mode": True,
     }
 

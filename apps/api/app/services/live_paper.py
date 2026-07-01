@@ -29,9 +29,12 @@ from app.db import get_conn, now, row_to_dict
 STARTING_BALANCE = 100000.0
 DEFAULT_SYMBOL = "BTCUSDT"
 SUPPORTED_SYMBOLS = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT","DOGEUSDT","AVAXUSDT","LINKUSDT","TRXUSDT"]
-LIVE_BINARY_REL = Path("build") / "Release" / "prism_live_paper_trading.exe"
+LIVE_BINARY_NAME = "prism_live_paper_trading"
+LIVE_BINARY_WINDOWS_NAME = "prism_live_paper_trading.exe"
+LIVE_BUILD_COMMAND = "cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --config Release --target prism_live_paper_trading"
 
 _metric_re = re.compile(r"([A-Za-z0-9_]+)=([^\s]+)")
+_heartbeat_prefix = "QUANTOS_HEARTBEAT "
 
 _ticker_cache = {"ts": 0.0, "prices": {}}
 
@@ -68,12 +71,12 @@ def _market_table(session: Optional["LivePaperSession"] = None) -> List[Dict[str
             "symbol": sym,
             "covered": True,
             "paper_status": "ACTIVE_WEBSOCKET" if is_active else "SUPPORTED",
-            "latest_price": state.get("last_price") or prices.get(sym, 0.0),
+            "latest_price": state.get("last_price") or prices.get(sym),
             "messages": state.get("processed", 0) if is_active else 0,
             "bars": state.get("bars", 0) if is_active else 0,
             "signals": state.get("signals", 0) if is_active else 0,
             "trades": state.get("total_trades", 0) if is_active else 0,
-            "p95_engine_us": state.get("p95_engine_us", 0) if is_active else 0,
+            "p95_engine_us": state.get("p95_engine_us") if is_active else None,
             "source": "C++ Binance WebSocket" if is_active else "Supported market",
         })
     return rows
@@ -85,6 +88,58 @@ def _float(v: Any, default: float = 0.0) -> float:
         return float(v)
     except Exception:
         return default
+
+
+def _path_for_display(path: Path) -> str:
+    try:
+        return str(path)
+    except Exception:
+        return ""
+
+
+def _candidate_live_binary_paths(project_root: Path, override: str = "") -> List[Path]:
+    if override:
+        p = Path(override)
+        return [p if p.is_absolute() else project_root / p]
+    return [
+        project_root / "build" / "Release" / LIVE_BINARY_WINDOWS_NAME,
+        project_root / "build" / LIVE_BINARY_WINDOWS_NAME,
+        Path("/app/build/Release") / LIVE_BINARY_NAME,
+        project_root / "build" / "Release" / LIVE_BINARY_NAME,
+        project_root / "build" / LIVE_BINARY_NAME,
+    ]
+
+
+def resolve_live_paper_binary(project_root: Path | None = None, override: str | None = None) -> Dict[str, Any]:
+    root = project_root or settings.project_root
+    raw_override = os.getenv("LIVE_PAPER_BINARY_PATH", "") if override is None else override
+    candidates = _candidate_live_binary_paths(root, raw_override.strip())
+    selected = next((p for p in candidates if p.exists()), None)
+    return {
+        "repo_root": str(root),
+        "checked_paths": [_path_for_display(p) for p in candidates],
+        "selected_binary_path": str(selected) if selected else None,
+        "binary_found": selected is not None,
+        "build_command": LIVE_BUILD_COMMAND,
+        "override_used": bool(raw_override.strip()),
+    }
+
+
+def parse_quantos_heartbeat(line: str) -> Dict[str, Any]:
+    if not line.startswith(_heartbeat_prefix):
+        return {}
+    try:
+        payload = json.loads(line[len(_heartbeat_prefix):].strip())
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    allowed = {
+        "symbol", "latest_price", "equity", "cash", "unrealized_pnl", "realized_pnl",
+        "position_qty", "trades", "p50_latency_us", "p95_latency_us", "p99_latency_us",
+        "mode", "feed_status", "processed", "bars", "signals",
+    }
+    return {k: payload.get(k) for k in allowed if k in payload}
 
 
 def _live_session_dir(user_id: str, session_id: str) -> Path:
@@ -471,6 +526,11 @@ class LivePaperSession:
     session_number: int = 0
     config_path: str = ""
     live_config: Dict[str, Any] = field(default_factory=dict)
+    binary_diagnostics: Dict[str, Any] = field(default_factory=dict)
+    selected_binary_path: str = ""
+    last_heartbeat: Dict[str, Any] = field(default_factory=dict)
+    last_heartbeat_at: str = ""
+    feed_status: str = "idle"
 
 
 class LivePaperManager:
@@ -482,20 +542,12 @@ class LivePaperManager:
         self._lock = threading.RLock()
         self._sessions: Dict[str, LivePaperSession] = {}
 
-    def _binary_path(self) -> Path:
-        override = os.getenv("LIVE_PAPER_BINARY_PATH", "")
-        if override:
-            return Path(override)
-        if os.name == "nt":
-            return settings.project_root / LIVE_BINARY_REL
-        # Linux/macOS/Docker build output
-        preferred = settings.project_root / "build" / "prism_live_paper_trading"
-        if preferred.exists():
-            return preferred
-        release = settings.project_root / "build" / "Release" / "prism_live_paper_trading"
-        if release.exists():
-            return release
-        return preferred
+    def _binary_diagnostics(self) -> Dict[str, Any]:
+        return resolve_live_paper_binary(settings.project_root)
+
+    def _binary_path(self) -> Optional[Path]:
+        selected = self._binary_diagnostics().get("selected_binary_path")
+        return Path(selected) if selected else None
 
     def _is_locked(self, user_id: str) -> str:
         with get_conn() as conn:
@@ -514,10 +566,14 @@ class LivePaperManager:
             active = self._sessions.get(user_id)
             if active and any(p.poll() is None for p in active.processes.values()):
                 return self.status(user_id)
-            binary = self._binary_path()
+            binary_diag = self._binary_diagnostics()
+            binary = Path(binary_diag["selected_binary_path"]) if binary_diag.get("selected_binary_path") else None
             session_no = _next_session_number(user_id)
             session = LivePaperSession(user_id=user_id, session_id=str(session_no), session_number=session_no, status="starting", started_at=now())
             self._sessions[user_id] = session
+            session.binary_diagnostics = binary_diag
+            session.selected_binary_path = str(binary) if binary else ""
+            session.feed_status = "starting"
             live_config = _write_live_strategy_config(user_id, session.session_id, strategy_id, symbols_override=symbols)
             session.live_config = live_config
             session.config_path = live_config.get("config_path", "")
@@ -525,9 +581,15 @@ class LivePaperManager:
             session.selected_strategy_db_id = live_config.get("strategy_db_id", "")
             session.selected_strategy_name = live_config.get("name", "")
             _insert_or_replace_wallet(user_id, session.session_id)
-            if not binary.exists():
+            if not binary or not binary.exists():
                 session.status = "disabled"
-                session.error = f"Live paper binary not found: {binary}. Synthetic fallback is disabled. Build C++ target first."
+                session.feed_status = "binary_missing"
+                session.error = (
+                    "Live paper binary not found. Synthetic fallback is disabled.\n"
+                    f"Resolved repo root: {binary_diag['repo_root']}\n"
+                    "Checked paths:\n- " + "\n- ".join(binary_diag["checked_paths"]) + "\n"
+                    f"Build command: {binary_diag['build_command']}"
+                )
                 _copy_final_reports(session.user_id, session.session_id)
                 return self.status(user_id)
             try:
@@ -560,6 +622,7 @@ class LivePaperManager:
                     session.symbol_states[sym] = {"symbol": sym, "processed": 0, "last_price": 0.0, "bars": 0, "signals": 0, "total_trades": 0, "p95_engine_us": 0}
                     threading.Thread(target=self._reader, args=(session, sym, proc), daemon=True).start()
                 session.status = "running"
+                session.feed_status = "waiting_for_heartbeat"
                 return self.status(user_id)
             except Exception as exc:
                 session.status = "failed"
@@ -575,6 +638,33 @@ class LivePaperManager:
                 session.stdout_tail.append(line)
                 session.stdout_tail = session.stdout_tail[-80:]
             metrics = dict(_metric_re.findall(line))
+            heartbeat = parse_quantos_heartbeat(line)
+            if heartbeat:
+                with self._lock:
+                    hb_symbol = str(heartbeat.get("symbol") or symbol).upper()
+                    symbol_state = session.symbol_states.setdefault(hb_symbol, {"symbol": hb_symbol})
+                    symbol_state["last_price"] = _float(heartbeat.get("latest_price"), symbol_state.get("last_price", 0.0))
+                    symbol_state["realized_pnl"] = _float(heartbeat.get("realized_pnl"), symbol_state.get("realized_pnl", 0.0))
+                    symbol_state["unrealized_pnl"] = _float(heartbeat.get("unrealized_pnl"), symbol_state.get("unrealized_pnl", 0.0))
+                    symbol_state["processed"] = int(_float(heartbeat.get("processed"), symbol_state.get("processed", 0)))
+                    symbol_state["bars"] = int(_float(heartbeat.get("bars"), symbol_state.get("bars", 0)))
+                    symbol_state["signals"] = int(_float(heartbeat.get("signals"), symbol_state.get("signals", 0)))
+                    symbol_state["open_positions"] = int(1 if _float(heartbeat.get("position_qty")) else 0)
+                    symbol_state["total_trades"] = int(_float(heartbeat.get("trades"), symbol_state.get("total_trades", 0)))
+                    symbol_state["p50_engine_us"] = _float(heartbeat.get("p50_latency_us"), symbol_state.get("p50_engine_us", 0.0))
+                    symbol_state["p95_engine_us"] = _float(heartbeat.get("p95_latency_us"), symbol_state.get("p95_engine_us", 0.0))
+                    symbol_state["p99_engine_us"] = _float(heartbeat.get("p99_latency_us"), symbol_state.get("p99_engine_us", 0.0))
+                    session.last_heartbeat = heartbeat
+                    session.last_heartbeat_at = now()
+                    session.feed_status = str(heartbeat.get("feed_status") or "connected")
+                    session.metrics = _aggregate_session_metrics(session)
+                    session.session_metrics = session.metrics
+                    session.last_price = max((_float(st.get("last_price")) for st in session.symbol_states.values()), default=session.last_price)
+                    session.realized_pnl = sum(_float(st.get("realized_pnl")) for st in session.symbol_states.values())
+                    session.unrealized_pnl = sum(_float(st.get("unrealized_pnl")) for st in session.symbol_states.values())
+                    session.processed = int(session.metrics.get("processed", 0))
+                    _update_wallet(session.user_id, session.session_id, session.realized_pnl, session.unrealized_pnl)
+                continue
             if metrics:
                 with self._lock:
                     symbol_state = session.symbol_states.setdefault(symbol, {})
@@ -610,6 +700,7 @@ class LivePaperManager:
         with self._lock:
             if all(p.poll() is not None for p in session.processes.values()) and session.status == "running":
                 session.status = "stopped"
+                session.feed_status = "disconnected"
                 session.stopped_at = now()
                 session.report_files = _copy_final_reports(session.user_id, session.session_id)
 
@@ -649,6 +740,7 @@ class LivePaperManager:
                 if proc.poll() is None:
                     proc.kill()
             session.status = "stopped"
+            session.feed_status = "disconnected"
             session.stopped_at = now()
             session.report_files = _copy_final_reports(session.user_id, session.session_id)
             return self.status(user_id)
@@ -657,11 +749,30 @@ class LivePaperManager:
         with self._lock:
             session = self._sessions.get(user_id)
             if not session:
-                return {"status": "idle", "market_table": _market_table(None)}
+                diag = self._binary_diagnostics()
+                return {
+                    "status": "idle",
+                    "engine_ready": bool(diag.get("binary_found")),
+                    "binary_diagnostics": diag,
+                    "selected_binary_path": diag.get("selected_binary_path"),
+                    "feed_status": "ready" if diag.get("binary_found") else "binary_missing",
+                    "process_running": False,
+                    "market_table": _market_table(None),
+                    "markets": _market_table(None),
+                }
             wallet = _update_wallet(user_id, session.session_id, session.realized_pnl, session.unrealized_pnl)
             metrics = session.metrics or _aggregate_session_metrics(session)
+            process_running = any(p.poll() is None for p in session.processes.values())
+            diag = session.binary_diagnostics or self._binary_diagnostics()
             return {
                 "status": session.status,
+                "engine_ready": bool(diag.get("binary_found")),
+                "process_running": process_running,
+                "feed_status": session.feed_status or ("waiting_for_heartbeat" if process_running else "disconnected"),
+                "binary_diagnostics": diag,
+                "selected_binary_path": session.selected_binary_path or diag.get("selected_binary_path"),
+                "last_heartbeat": session.last_heartbeat or None,
+                "last_heartbeat_at": session.last_heartbeat_at or None,
                 "session_id": session.session_id,
                 "session_number": session.session_number,
                 "started_at": session.started_at,
@@ -684,6 +795,7 @@ class LivePaperManager:
                 "config_path": session.config_path,
                 "live_config": session.live_config,
                 "market_table": _market_table(session),
+                "markets": _market_table(session),
             }
 
 

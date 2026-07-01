@@ -10,12 +10,12 @@ export default function EngineConnection(){
   async function connect(source='BTCUSDT'){try{setMsg(''); const r=await api('/engine/token',{method:'POST',body:JSON.stringify({mode:'paper',exchange:'binance',source})}); setToken(r); await refresh();}catch(e){setMsg(formatApiError(e));}}
   useEffect(()=>{refresh(); const t=window.setInterval(refresh,3000); return()=>window.clearInterval(t);},[]);
   const latency=status?.latency||{};
-  async function copyCommand(){ if(token?.command && navigator?.clipboard) await navigator.clipboard.writeText(token.command); }
+  async function copyCommand(cmd?: string){ if(cmd && navigator?.clipboard) await navigator.clipboard.writeText(cmd); }
   return <>
     <div className="hero"><h1>Engine Connection</h1><p>Run market data, paper simulation, and low-latency work on your machine. Cloud stores only safe telemetry/results.</p></div>
     {msg&&<div className="card" style={{color:'#fca5a5'}}>{msg}</div>}
     <div className="card"><h2>Local Engine Bridge</h2><button onClick={()=>connect('BTCUSDT')}>Connect Local Engine</button>{' '}<button onClick={()=>connect('BTCUSDT')}>Connect BTC Live Feed</button>{' '}<button onClick={()=>connect('CUSTOM')}>Connect Custom Source</button>
-      {token&&<div style={{marginTop:16}}><b>Run this locally:</b><pre style={{whiteSpace:'pre-wrap'}}>{token.command}</pre><button onClick={copyCommand}>Copy command</button><p style={{color:'#94a3b8'}}>Token expires at epoch {token.expires_at_epoch}. Do not paste exchange API keys into QuantOS cloud.</p></div>}
+      {token&&<div style={{marginTop:16}}><b>Run this locally on Windows:</b><pre style={{whiteSpace:'pre-wrap'}}>{token.windows_command || token.command}</pre><button onClick={()=>copyCommand(token.windows_command || token.command)}>Copy Windows command</button><div style={{marginTop:14}}><b>Run this locally on Linux/macOS/Docker:</b><pre style={{whiteSpace:'pre-wrap'}}>{token.linux_command || './build/quantos-engine --token <TOKEN> --mode paper --exchange binance --symbol BTCUSDT'}</pre><button onClick={()=>copyCommand(token.linux_command)}>Copy Linux command</button></div><p style={{color:'#94a3b8'}}>Token expires at epoch {token.expires_at_epoch}. Do not paste exchange API keys into QuantOS cloud.</p></div>}
     </div>
     <div className="card"><h2>Status</h2><div className="grid">
       <div><b>Connected/Disconnected</b><div className="metric">{status?.connected?'BTCUSDT connected':'Disconnected'}</div></div><div><b>Engine token status</b><div className="metric">{token?'Generated':'Not generated'}</div></div>

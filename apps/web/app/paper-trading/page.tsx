@@ -40,7 +40,21 @@ type LiveStatus = {
   metrics?: Record<string, any>;
   session_metrics?: Record<string, any>;
   markets?: any[];
+  market_table?: any[];
   supported_symbols?: string[];
+  engine_ready?: boolean;
+  process_running?: boolean;
+  feed_status?: string;
+  selected_binary_path?: string;
+  binary_diagnostics?: {
+    repo_root?: string;
+    checked_paths?: string[];
+    selected_binary_path?: string | null;
+    binary_found?: boolean;
+    build_command?: string;
+  };
+  last_heartbeat?: Record<string, any> | null;
+  last_heartbeat_at?: string | null;
   wallet?: {
     starting_balance: number;
     current_balance: number; // Backwards-compatible alias for account_equity
@@ -407,7 +421,7 @@ export default function PaperTradingPage() {
       setMessage(
         r.status === "disabled"
           ? r.error
-          : `Live paper session started using ${cfgName} on ${selectedSymbols.join(", ")}. Waiting for real Binance WebSocket ticks.`,
+          : `Starting live paper session using ${cfgName} on ${selectedSymbols.join(", ")}. Waiting for local engine heartbeat.`,
       );
     } catch (err) {
       setMessage(formatApiError(err));
@@ -524,7 +538,11 @@ export default function PaperTradingPage() {
     "-";
   const tradeRows = useMemo(() => buildTradeRows(events), [events]);
   const openPositions = useMemo(() => buildOpenPositions(status, tradeRows), [status, tradeRows]);
-  const marketRows = Array.isArray(status.markets) ? status.markets : [];
+  const marketRows = Array.isArray(status.markets)
+    ? status.markets
+    : Array.isArray(status.market_table)
+      ? status.market_table
+      : [];
   const activeMarkets = marketRows.filter((m: any) => m.paper_status === "ACTIVE_WEBSOCKET");
   const primaryMarket =
     activeMarkets.find((m: any) => m.symbol === (status.symbol || liveConfig.symbols?.[0])) ||
@@ -535,7 +553,8 @@ export default function PaperTradingPage() {
     primaryMarket?.symbol ||
     (status.symbol && status.symbol !== "MULTI" ? status.symbol : selectedSymbols[0]) ||
     "Market";
-  const primaryPrice = primaryMarket?.latest_price ?? status.last_price;
+  const heartbeat = status.last_heartbeat || {};
+  const primaryPrice = heartbeat.latest_price ?? primaryMarket?.latest_price ?? status.last_price;
   const openTrade = Number(metrics.open_trade || metrics.open_positions || 0);
   const totalTrades = Number(metrics.total_trades || 0);
   const wins = Number(metrics.wins || 0);
@@ -549,9 +568,15 @@ export default function PaperTradingPage() {
   const canStop =
     !busy && (status.status === "running" || status.status === "starting");
   const liveStatusLabel =
-    status.status === "running" || status.status === "starting"
-      ? "TRADING"
-      : "STOPPED";
+    status.status === "starting"
+      ? "STARTING"
+      : status.status === "running" && status.feed_status === "connected"
+        ? "CONNECTED"
+        : status.status === "running"
+          ? "WAITING FOR FEED"
+          : status.engine_ready
+            ? "ENGINE READY"
+            : "STOPPED";
   const setupScore =
     metrics.current_setup_score ??
     metrics.setup_score ??
@@ -738,6 +763,26 @@ export default function PaperTradingPage() {
         {message}
       </p>
       <section style={{ ...panelStyle, marginBottom: 20, background: "#0f172a" }}>
+        <h2 style={h2Style}>Local engine status</h2>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 12 }}>
+          <Mini label="Readiness" value={status.engine_ready ? "Engine ready" : "Binary missing"} />
+          <Mini label="Process" value={status.process_running ? "Running" : "Stopped"} />
+          <Mini label="Feed" value={String(status.feed_status || (status.engine_ready ? "ready" : "binary_missing")).replaceAll("_", " ")} />
+          <Mini label="Heartbeat" value={status.last_heartbeat_at ? cleanTime(status.last_heartbeat_at) : "waiting for feed"} />
+        </div>
+        <details style={{ marginTop: 12 }}>
+          <summary style={{ cursor: "pointer", color: "#93c5fd", fontWeight: 800 }}>Debug: local binary resolution</summary>
+          <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 10 }}>
+            <tbody>
+              <SummaryRow label="Repo root" value={status.binary_diagnostics?.repo_root || "-"} />
+              <SummaryRow label="Selected binary" value={status.selected_binary_path || status.binary_diagnostics?.selected_binary_path || "Not found"} />
+              <SummaryRow label="Build command" value={status.binary_diagnostics?.build_command || "cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --config Release --target prism_live_paper_trading"} />
+            </tbody>
+          </table>
+          <pre style={preStyle}>{(status.binary_diagnostics?.checked_paths || []).join("\n") || "No checked paths reported yet."}</pre>
+        </details>
+      </section>
+      <section style={{ ...panelStyle, marginBottom: 20, background: "#0f172a" }}>
         <h2 style={h2Style}>Execution model</h2>
         <p style={{ color: "#cbd5e1", fontSize: 13 }}>
           Live paper trading uses <b>realistic tick-based market fills</b>. Stop and target prices are intended trigger levels; actual exit price can differ because the paper broker exits on the next live Binance trade tick. The Trade Journal shows slippage explicitly so stop/target differences are transparent.
@@ -772,15 +817,15 @@ export default function PaperTradingPage() {
         <Card label="Live status" value={liveStatusLabel} />
         <Card
           label={`${primarySymbol} price`}
-          value={primaryPrice ? `$${money(primaryPrice)}` : "waiting"}
+          value={primaryPrice ? `$${money(primaryPrice)}` : "waiting for feed"}
         />
         <Card
           label="Account equity"
-          value={`$${money(accountEquity)}`}
+          value={`$${money(heartbeat.equity ?? accountEquity)}`}
         />
         <Card
           label="Cash balance"
-          value={`$${money(cashBalance)}`}
+          value={`$${money(heartbeat.cash ?? cashBalance)}`}
         />
         <Card
           label="Realized PnL"
@@ -788,7 +833,7 @@ export default function PaperTradingPage() {
         />
         <Card
           label="Unrealized PnL"
-          value={`$${money(unrealizedPnl)}`}
+          value={`$${money(heartbeat.unrealized_pnl ?? unrealizedPnl)}`}
         />
         <Card
           label="Open positions"
@@ -802,6 +847,7 @@ export default function PaperTradingPage() {
         <Card label="Live setup score" value={String(setupScore)} />
         <Card label="Bars" value={String(metrics.bars || 0)} />
         <Card label="Total trades" value={String(totalTrades)} />
+        <Card label="Heartbeat trades" value={heartbeat.trades === undefined ? "waiting for feed" : String(heartbeat.trades)} />
         <WinLossCard wins={wins} losses={losses} breakevens={breakevens} />
         <Card label="Gross R" value={String(metrics.gross_R ?? 0)} />
         <Card label="Avg R" value={String(metrics.avg_R ?? 0)} />

@@ -166,9 +166,18 @@ class Settings:
         if override:
             p = Path(override)
             return p if p.is_absolute() else self.project_root / p
+        candidates = []
         if sys.platform.startswith("win"):
-            return self.project_root / "build" / "Release" / "prism_live_paper_trading.exe"
-        return self.project_root / "build" / "Release" / "prism_live_paper_trading"
+            candidates.extend([
+                self.project_root / "build" / "Release" / "prism_live_paper_trading.exe",
+                self.project_root / "build" / "prism_live_paper_trading.exe",
+            ])
+        candidates.extend([
+            Path("/app/build/Release/prism_live_paper_trading"),
+            self.project_root / "build" / "Release" / "prism_live_paper_trading",
+            self.project_root / "build" / "prism_live_paper_trading",
+        ])
+        return next((p for p in candidates if p.exists()), candidates[0])
 
     def is_postgres(self) -> bool:
         return self.db_backend == "postgresql"

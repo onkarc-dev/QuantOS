@@ -527,6 +527,24 @@ int main(int argc, char** argv) {
                       << " p99_engine_us=" << static_cast<double>(engine_latency.percentile_ns(99.0)) / 1000.0
                       << " p95_ingest_us=" << static_cast<double>(ingest_latency.percentile_ns(95.0)) / 1000.0
                       << "\n";
+            std::cout << "QUANTOS_HEARTBEAT {"
+                      << "\"symbol\":\"" << args.symbol << "\","
+                      << "\"latest_price\":" << last_price << ","
+                      << "\"equity\":" << (100000.0 + portfolio.total_realized_pnl() + portfolio.total_unrealized_pnl()) << ","
+                      << "\"cash\":" << (100000.0 + portfolio.total_realized_pnl()) << ","
+                      << "\"realized_pnl\":" << portfolio.total_realized_pnl() << ","
+                      << "\"unrealized_pnl\":" << portfolio.total_unrealized_pnl() << ","
+                      << "\"position_qty\":" << snapshot_state.open_qty << ","
+                      << "\"trades\":" << snapshot_state.total_trades << ","
+                      << "\"processed\":" << proc << ","
+                      << "\"bars\":" << prism.bars_count() << ","
+                      << "\"signals\":" << signals << ","
+                      << "\"p50_latency_us\":" << static_cast<double>(engine_latency.percentile_ns(50.0)) / 1000.0 << ","
+                      << "\"p95_latency_us\":" << static_cast<double>(engine_latency.percentile_ns(95.0)) / 1000.0 << ","
+                      << "\"p99_latency_us\":" << static_cast<double>(engine_latency.percentile_ns(99.0)) / 1000.0 << ","
+                      << "\"feed_status\":\"" << (last_price > 0.0 ? "connected" : "waiting_for_feed") << "\","
+                      << "\"mode\":\"paper\""
+                      << "}\n" << std::flush;
         }
     }
 
