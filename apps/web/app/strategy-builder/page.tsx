@@ -77,6 +77,11 @@ function fmt(n: any, d = 2) {
   const x = Number(n ?? 0);
   return Number.isFinite(x) ? x.toFixed(d).replace(/\.00$/, "") : "0";
 }
+function metric(n: any, suffix = "", d = 2) {
+  if (n === null || n === undefined || n === "") return "Not enough data";
+  const x = Number(n);
+  return Number.isFinite(x) ? `${x.toFixed(d).replace(/\.00$/, "")}${suffix}` : "Not enough data";
+}
 function pct(n: any) {
   const x = Number(n ?? 0);
   return Number.isFinite(x) ? `${(x * 100).toFixed(1)}%` : "0%";
@@ -646,6 +651,13 @@ const td = { borderBottom: "1px solid #1e293b", padding: "10px 8px" };
 const tdStrong = { ...td, color: "#94a3b8", fontWeight: 800, width: 260 };
 function BacktestResult({ job, pollJob }: { job: any; pollJob: any }) {
   const s = job.summary || {};
+  const pr = s.performance_and_robustness || job.performance_and_robustness || {};
+  const ra = pr.risk_adjusted || {};
+  const ex = pr.expectancy || {};
+  const risk = pr.risk || {};
+  const tb = pr.trading_behavior || {};
+  const robust = pr.robustness || {};
+  const warnings = Array.isArray(pr.warnings) ? pr.warnings : [];
   const allSymbols = Array.isArray(job.symbols)
     ? job.symbols
     : Array.isArray(job.market_data?.symbols)
@@ -756,6 +768,32 @@ function BacktestResult({ job, pollJob }: { job: any; pollJob: any }) {
           </table>
         </div>
       )}
+      <div style={{ marginTop: 16 }}>
+        <h3>Performance & Robustness</h3>
+        <div className="grid" style={{ marginTop: 12 }}>
+          <Kpi label="Sharpe" value={metric(ra.sharpe)} />
+          <Kpi label="Sortino" value={metric(ra.sortino)} />
+          <Kpi label="Calmar" value={metric(ra.calmar)} />
+          <Kpi label="Recovery Factor" value={metric(ra.recovery_factor)} />
+          <Kpi label="Expectancy" value={metric(ex.expectancy_R_per_trade, "R")} color={signedClass(ex.expectancy_R_per_trade)} />
+          <Kpi label="Avg Winner / Loser" value={`${metric(ex.average_winner_R, "R")} / ${metric(ex.average_loser_R, "R")}`} />
+          <Kpi label="Largest Winner / Loser" value={`${metric(ex.largest_winner_R, "R")} / ${metric(ex.largest_loser_R, "R")}`} />
+          <Kpi label="Turnover Estimate" value={metric(tb.turnover_estimate)} />
+          <Kpi label="Trades / Day" value={metric(tb.trades_per_day)} />
+          <Kpi label="Exposure Estimate" value={metric(tb.exposure_estimate, "", 3)} />
+          <Kpi label="Max Win / Loss Streak" value={`${risk.max_consecutive_wins ?? 0} / ${risk.max_consecutive_losses ?? 0}`} />
+          <Kpi label="Ulcer Index" value={metric(risk.ulcer_index)} />
+          <Kpi label="Overfitting Risk" value={`${robust.overfitting_risk_label || "Not enough data"} ${robust.overfitting_risk_score ?? ""}`} />
+        </div>
+        <p className="muted" style={{ marginTop: 10 }}>
+          Ratios require enough R-multiple dispersion. Turnover is estimated when full notional data is unavailable.
+        </p>
+        {warnings.length > 0 && (
+          <ul className="muted" style={{ lineHeight: 1.7 }}>
+            {warnings.map((w: string) => <li key={w}>{w}</li>)}
+          </ul>
+        )}
+      </div>
       <div style={{ overflowX: "auto", marginTop: 16 }}>
         <table className="pro-table" style={{ width: "100%" }}>
           <thead>

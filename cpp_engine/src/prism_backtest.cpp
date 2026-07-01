@@ -78,6 +78,34 @@ static double avg_volume(const std::vector<Bar>& b, size_t end, size_t n){
     if(end==0) return 0.0; size_t start=(end>n?end-n:0); double sum=0; size_t cnt=0; for(size_t i=start;i<end;++i){sum+=b[i].volume; ++cnt;} return cnt?sum/cnt:0.0;
 }
 
+static std::string json_num(double v, bool known=true) {
+    if(!known || !std::isfinite(v)) return "null";
+    std::ostringstream ss; ss << std::fixed << std::setprecision(6) << v; return ss.str();
+}
+
+static double vec_mean(const std::vector<double>& vals) {
+    if(vals.empty()) return 0.0;
+    return std::accumulate(vals.begin(), vals.end(), 0.0) / static_cast<double>(vals.size());
+}
+
+static double vec_pstdev(const std::vector<double>& vals) {
+    if(vals.size() < 2) return 0.0;
+    double m = vec_mean(vals), acc = 0.0;
+    for(double v: vals) acc += (v - m) * (v - m);
+    return std::sqrt(acc / static_cast<double>(vals.size()));
+}
+
+static int distinct_days(const std::vector<Bar>& bars) {
+    std::vector<std::string> days;
+    for(const auto& b: bars) {
+        if(b.timestamp.size() >= 10) {
+            std::string d = b.timestamp.substr(0, 10);
+            if(std::find(days.begin(), days.end(), d) == days.end()) days.push_back(d);
+        }
+    }
+    return static_cast<int>(days.size());
+}
+
 static std::vector<bool> compute_htf_bullish_filter(const std::vector<Bar>& bars, int base_seconds, int htf_seconds, int fast_len, int slow_len) {
     std::vector<bool> out(bars.size(), true);
     if (bars.empty()) return out;
@@ -251,7 +279,46 @@ int main(int argc, char** argv){
     { std::ofstream o(outdir+"/setup_score_log.csv"); o << "timestamp,structure,positioning,regime,microstructure,interaction,setup_score,tier\n"; for(auto&s:scores) o<<s.timestamp<<","<<s.structure<<","<<s.positioning<<","<<s.regime<<","<<s.microstructure<<","<<s.interaction<<","<<s.setup_score<<","<<s.tier<<"\n"; }
     { std::ofstream o(outdir+"/entry_intent_log.csv"); o << "timestamp,entry_type,breakout_level,retest_zone,entry_price,stop_loss,target1,target2,setup_score,reason_codes\n"; for(auto&i:intents) o<<i.timestamp<<","<<i.entry_type<<","<<i.breakout_level<<",\""<<i.retest_zone<<"\","<<i.entry_price<<","<<i.stop_loss<<","<<i.target1<<","<<i.target2<<","<<i.setup_score<<",\""<<i.reason_codes<<"\"\n"; }
     { std::ofstream o(outdir+"/trade_log.csv"); o << "trade_id,entry_time,entry_price,stop_loss,target1,target2,exit_time,exit_price,exit_reason,r_multiple,setup_score_at_entry,regime_at_entry,holding_bars\n"; for(auto&t:trades) o<<t.trade_id<<","<<t.entry_time<<","<<t.entry_price<<","<<t.stop_loss<<","<<t.target1<<","<<t.target2<<","<<t.exit_time<<","<<t.exit_price<<","<<t.exit_reason<<","<<t.r_multiple<<","<<t.setup_score<<","<<t.regime_at_entry<<","<<t.holding_bars<<"\n"; }
-    double grossR=0,wins=0,losses=0, posR=0, negR=0, hold=0; for(auto&t:trades){ grossR+=t.r_multiple; hold+=t.holding_bars; if(t.r_multiple>0){wins++; posR+=t.r_multiple;} else if(t.r_multiple<0){losses++; negR+=std::abs(t.r_multiple);} }
+    double grossR=0,wins=0,losses=0, posR=0, negR=0, hold=0;
+    std::vector<double> rvals, winR, lossR, drawdownR, activeDd, holdingBars;
+    int maxConsecWins=0, maxConsecLosses=0, curWins=0, curLosses=0, ddDuration=0, maxDdDuration=0;
+    double calcEquity=0.0, calcPeak=0.0, sumNegativeDdSq=0.0;
+    for(auto&t:trades){
+        grossR+=t.r_multiple; hold+=t.holding_bars; rvals.push_back(t.r_multiple); holdingBars.push_back(static_cast<double>(t.holding_bars));
+        if(t.r_multiple>0){wins++; posR+=t.r_multiple; winR.push_back(t.r_multiple); curWins++; curLosses=0;}
+        else if(t.r_multiple<0){losses++; negR+=std::abs(t.r_multiple); lossR.push_back(t.r_multiple); curLosses++; curWins=0;}
+        else {curWins=0; curLosses=0;}
+        maxConsecWins=std::max(maxConsecWins, curWins); maxConsecLosses=std::max(maxConsecLosses, curLosses);
+        calcEquity += t.r_multiple;
+        if(calcEquity >= calcPeak){ if(ddDuration>maxDdDuration) maxDdDuration=ddDuration; ddDuration=0; calcPeak=calcEquity; }
+        else { ddDuration++; }
+        double dd = calcEquity - calcPeak; drawdownR.push_back(dd); if(dd < 0) { activeDd.push_back(std::abs(dd)); sumNegativeDdSq += dd * dd; }
+    }
+    if(ddDuration>maxDdDuration) maxDdDuration=ddDuration;
+    double avgR = trades.empty()?0:grossR/trades.size();
+    double volR = vec_pstdev(rvals);
+    std::vector<double> downsideVals; for(double v: rvals) downsideVals.push_back(std::min(0.0, v));
+    double downsideVol = vec_pstdev(downsideVals);
+    double maxDdSigned = drawdownR.empty()?0.0:*std::min_element(drawdownR.begin(), drawdownR.end());
+    double avgDd = activeDd.empty()?0.0:vec_mean(activeDd);
+    double ulcer = activeDd.empty()?0.0:std::sqrt(sumNegativeDdSq / static_cast<double>(activeDd.size()));
+    double avgHold = holdingBars.empty()?0.0:vec_mean(holdingBars);
+    std::vector<double> sortedHold = holdingBars; std::sort(sortedHold.begin(), sortedHold.end());
+    double medianHold = sortedHold.empty()?0.0:(sortedHold.size()%2 ? sortedHold[sortedHold.size()/2] : (sortedHold[sortedHold.size()/2-1]+sortedHold[sortedHold.size()/2])/2.0);
+    double profitFactor = (negR>0?posR/negR:posR);
+    int dayCount = std::max(1, distinct_days(bars));
+    double tradesPerDay = static_cast<double>(trades.size()) / static_cast<double>(dayCount);
+    double turnoverEstimate = static_cast<double>(trades.size()) * std::max(1.0, avgHold);
+    double exposureEstimate = bars.empty()?0.0:hold/static_cast<double>(bars.size());
+    int overfitScore = 15;
+    if(trades.size() < 30) overfitScore += 30; else if(trades.size() < 100) overfitScore += 15;
+    if(dayCount <= 1) overfitScore += 20;
+    if(profitFactor >= 8.0) overfitScore += 20;
+    if(std::abs(maxDdSigned) > 0.0 && grossR > 0.0 && std::abs(maxDdSigned)/std::max(std::abs(grossR), 1e-9) > 0.5) overfitScore += 15;
+    if(tradesPerDay > 50.0) overfitScore += 10;
+    overfitScore = std::max(0, std::min(100, overfitScore));
+    std::string overfitLabel = overfitScore >= 60 ? "HIGH" : "MEDIUM";
+    bool warnFewTrades = trades.size() < 30, warnOneDay = dayCount <= 1, warnExtremePf = profitFactor >= 8.0, warnHighFreq = tradesPerDay > 50.0;
     { std::ofstream o(outdir+"/backtest_summary.json"); o<<"{\n"
       <<"  \"bars_processed\": "<<bars.size()<<",\n"
       <<"  \"breakouts\": "<<breakouts<<",\n"
@@ -278,8 +345,25 @@ int main(int argc, char** argv){
       <<"  \"gross_R\": "<<grossR<<",\n"
       <<"  \"max_drawdown_in_R\": "<<max_dd<<",\n"
       <<"  \"expected_value_in_R\": "<<(trades.empty()?0:grossR/trades.size())<<",\n"
-      <<"  \"profit_factor\": "<<(negR>0?posR/negR:posR)<<",\n"
-      <<"  \"average_holding_bars\": "<<(trades.empty()?0:hold/trades.size())<<"\n}\n"; }
+      <<"  \"profit_factor\": "<<profitFactor<<",\n"
+      <<"  \"average_holding_bars\": "<<(trades.empty()?0:hold/trades.size())<<",\n"
+      <<"  \"performance_and_robustness\": {\n"
+      <<"    \"risk_adjusted\": {\"sharpe\": "<<json_num(avgR / volR * std::sqrt(std::max<size_t>(1, trades.size())), volR>0 && trades.size()>1)<<", \"sortino\": "<<json_num(avgR / downsideVol * std::sqrt(std::max<size_t>(1, trades.size())), downsideVol>0 && trades.size()>1)<<", \"calmar\": "<<json_num(grossR/std::abs(maxDdSigned), std::abs(maxDdSigned)>0)<<", \"omega\": "<<json_num(posR/negR, negR>0)<<", \"recovery_factor\": "<<json_num(grossR/std::abs(maxDdSigned), std::abs(maxDdSigned)>0)<<"},\n"
+      <<"    \"expectancy\": {\"expectancy_R_per_trade\": "<<json_num(avgR, !trades.empty())<<", \"average_winner_R\": "<<json_num(vec_mean(winR), !winR.empty())<<", \"average_loser_R\": "<<json_num(vec_mean(lossR), !lossR.empty())<<", \"payoff_ratio\": "<<json_num(vec_mean(winR)/std::abs(vec_mean(lossR)), !winR.empty() && !lossR.empty())<<", \"largest_winner_R\": "<<json_num(winR.empty()?0.0:*std::max_element(winR.begin(), winR.end()), !winR.empty())<<", \"largest_loser_R\": "<<json_num(lossR.empty()?0.0:*std::min_element(lossR.begin(), lossR.end()), !lossR.empty())<<"},\n"
+      <<"    \"risk\": {\"max_drawdown_R\": "<<json_num(maxDdSigned)<<", \"average_drawdown_R\": "<<json_num(avgDd)<<", \"drawdown_duration_trades\": "<<maxDdDuration<<", \"max_consecutive_wins\": "<<maxConsecWins<<", \"max_consecutive_losses\": "<<maxConsecLosses<<", \"ulcer_index\": "<<json_num(ulcer)<<"},\n"
+      <<"    \"trading_behavior\": {\"trades_per_day\": "<<json_num(tradesPerDay)<<", \"turnover_estimate\": "<<json_num(turnoverEstimate, !trades.empty())<<", \"turnover_estimate_note\": \"Estimated from trade count and holding bars because full notional data is unavailable.\", \"exposure_estimate\": "<<json_num(exposureEstimate, !bars.empty())<<", \"average_holding_bars\": "<<json_num(avgHold, !holdingBars.empty())<<", \"median_holding_bars\": "<<json_num(medianHold, !holdingBars.empty())<<"},\n"
+      <<"    \"robustness\": {\"trade_count_sufficiency_warning\": "<<(warnFewTrades?"true":"false")<<", \"overfitting_risk_label\": \""<<overfitLabel<<"\", \"overfitting_risk_score\": "<<overfitScore<<", \"parameter_sensitivity\": null, \"parameter_sensitivity_note\": \"Not implemented yet.\", \"walk_forward\": {\"available\": false, \"note\": \"Placeholder until walk-forward validation is implemented.\"}, \"out_of_sample\": {\"available\": false, \"note\": \"Placeholder until out-of-sample validation is implemented.\"}, \"calculation_notes\": []},\n"
+      <<"    \"warnings\": [";
+      bool wroteWarn=false;
+      auto warn=[&](const std::string& w){ if(wroteWarn) o<<", "; o<<"\""<<esc(w)<<"\""; wroteWarn=true; };
+      if(warnFewTrades) warn("Too few trades for reliable inference.");
+      if(warnOneDay) warn("One-day-only backtest can overstate strategy quality.");
+      if(warnExtremePf) warn("Extreme profit factor may indicate overfitting or too few losses.");
+      if(warnHighFreq) warn("Excessive trades per day may indicate overtrading.");
+      warn("No out-of-sample validation is available yet.");
+      warn("No walk-forward validation is available yet.");
+      o<<"]\n"
+      <<"  }\n}\n"; }
     { std::ofstream o(outdir+"/setup_validation_report.json"); o<<"{\n  \"valid\": true,\n  \"setup_name\": \"Breakout Retest Acceptance\",\n  \"required_fields_present\": true,\n  \"weight_total_equals_100\": true,\n  \"valid_setup_type\": true,\n  \"valid_entry_type\": true,\n  \"atr_multiplier_present\": true,\n  \"ttl_present\": true,\n  \"target_R_values_valid\": true,\n  \"notes\": [\"C++ implementation integrated into realtime-financial-pipeline as prism_backtest mode\"]\n}\n"; }
     { std::ofstream o(outdir+"/audit_log.json"); o<<"[\n"; for(size_t i=0;i<audit.size();++i){ o<<"  "<<audit[i]<<(i+1<audit.size()?",":"")<<"\n";} o<<"]\n"; }
     { std::ofstream o(outdir+"/ledger.csv"); o << "timestamp,symbol,position_qty,avg_price,realized_pnl,unrealized_pnl,equity\n"; o << "," << (run_config.symbols.empty()?"btcusdt":run_config.symbols[0]) << ",0,0,0,0," << equity << "\n"; }

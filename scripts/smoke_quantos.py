@@ -156,8 +156,14 @@ def main() -> int:
                         files={"file": ("sample_market_data.csv", fh, "text/csv")},
                     ),
                     "CSV upload backtest",
-                )
+            )
             assert csv_result["rows"] > 0
+            pr = csv_result.get("performance_and_robustness")
+            assert pr, "performance_and_robustness missing"
+            assert "overfitting_risk_label" in pr["robustness"]
+            for key in ("sharpe", "sortino", "calmar"):
+                assert key in pr["risk_adjusted"], f"{key} missing"
+            assert isinstance(pr.get("warnings"), list), "warnings list missing"
             csv_job_id = csv_result["job_id"]
 
         with step("strategy health score"):

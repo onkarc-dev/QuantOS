@@ -4,6 +4,8 @@ import math
 from statistics import mean, pstdev
 from typing import Any
 
+from app.services.performance_metrics import build_performance_and_robustness
+
 
 def _f(v: Any, default: float = 0.0) -> float:
     try:
@@ -66,20 +68,25 @@ def build_strategy_health_score(trades: list[dict[str, Any]], journal_entries: l
     for j in mistakes:
         key = str(j.get('rule_broken') or j.get('mistake_tag'))
         repeated[key] = repeated.get(key, 0) + 1
-    sharpe = (avg / vol * math.sqrt(max(n, 1))) if vol else 0.0
-    sortino = (avg / downside * math.sqrt(max(n, 1))) if downside else 0.0
-    calmar = (sum(r) / abs(max_dd)) if max_dd else (sum(r) if sum(r) > 0 else 0.0)
-    omega = (gross_profit / gross_loss) if gross_loss else (gross_profit if gross_profit else 0.0)
+    pr = build_performance_and_robustness(trades, profit_factor=(gross_profit / gross_loss) if gross_loss else None)
+    sharpe = pr['risk_adjusted']['sharpe']
+    sortino = pr['risk_adjusted']['sortino']
+    calmar = pr['risk_adjusted']['calmar']
+    omega = pr['risk_adjusted']['omega']
     benchmark_avg = mean(benchmark_returns) if benchmark_returns else None
     information_ratio = ((avg - benchmark_avg) / vol * math.sqrt(max(n, 1))) if benchmark_avg is not None and vol else None
     profit_factor = (gross_profit / gross_loss) if gross_loss else (gross_profit if gross_profit else 0.0)
-    recovery_factor = (sum(r) / abs(max_dd)) if max_dd else 0.0
+    recovery_factor = pr['risk_adjusted']['recovery_factor'] or 0.0
     expectancy = avg
     payoff = (mean(wins) / abs(mean(losses))) if wins and losses else 0.0
-    performance_score = _score(sum(r), -5, 20)
-    risk_score = round((_score(abs(max_dd), 10, 0, invert=False) + _score(vol, 5, 0, invert=False)) / 2, 2)
+    sample_penalty = 0.45 if n < 10 else 0.7 if n < 30 else 0.9 if n < 100 else 1.0
+    one_day_penalty = 0.65 if any('One-day-only' in w for w in pr['warnings']) else 1.0
+    extreme_pf_penalty = 0.75 if profit_factor >= 8 and n < 100 else 1.0
+    performance_score = round(_score(sum(r), -5, 20) * sample_penalty * one_day_penalty * extreme_pf_penalty, 2)
+    risk_score = round((_score(abs(max_dd), 0, 10, invert=True) + _score(vol, 0, 5, invert=True)) / 2, 2)
     execution_score = _score((fees + slippage) / gross_profit if gross_profit else 1, 0.5, 0, invert=False)
-    robustness_score = round((_score(n, 10, 100) + (30 if n < 30 else 80 if n < 100 else 100)) / 2, 2)
+    overfit_score = pr['robustness']['overfitting_risk_score']
+    robustness_score = round((_score(n, 30, 100) + (100 - overfit_score)) / 2, 2)
     discipline_score = max(0.0, 100.0 - len(mistakes) * 10)
     overall = round(0.30 * performance_score + 0.25 * risk_score + 0.15 * execution_score + 0.20 * robustness_score + 0.10 * discipline_score, 2)
     return {
@@ -87,10 +94,12 @@ def build_strategy_health_score(trades: list[dict[str, Any]], journal_entries: l
         'sub_scores': {'performance': performance_score, 'risk': risk_score, 'execution': execution_score, 'robustness': robustness_score, 'discipline': discipline_score},
         'performance': {'net_return_R': sum(r), 'annualized_return_R': avg * 252 if n else 0, 'daily_return_R': avg, 'monthly_return_R': avg * 21},
         'risk': {'max_drawdown_R': max_dd, 'average_drawdown_R': avg_dd, 'drawdown_duration_trades': max(dd_durations) if dd_durations else 0, 'volatility_R': vol, 'downside_volatility_R': downside, 'var_95_R': var_95, 'cvar_95_R': cvar_95},
-        'risk_adjusted': {'sharpe': sharpe, 'sortino': sortino, 'calmar': calmar, 'omega': omega, 'information_ratio': information_ratio},
+        'risk_adjusted': {'sharpe': sharpe, 'sortino': sortino, 'calmar': calmar, 'omega': omega, 'information_ratio': information_ratio, 'recovery_factor': recovery_factor},
         'trading_quality': {'win_rate': len(wins) / n if n else 0, 'loss_rate': len(losses) / n if n else 0, 'average_winner_R': mean(wins) if wins else 0, 'average_loser_R': mean(losses) if losses else 0, 'profit_factor': profit_factor, 'recovery_factor': recovery_factor, 'expectancy_R': expectancy, 'payoff_ratio': payoff, 'average_trade_duration_seconds': mean(trade_durations) if trade_durations else 0},
         'execution_quality': {'turnover': turnover, 'estimated_fees': fees, 'estimated_slippage': slippage, 'cost_vs_gross_profit': ((fees + slippage) / gross_profit) if gross_profit else 0, 'fill_delay': None},
-        'robustness': {'trade_count_sufficiency_warning': n < 30, 'overfitting_warning': n < 100 or (len(wins) / n if n else 0) > 0.8, 'parameter_sensitivity': 'placeholder_not_implemented', 'out_of_sample_walk_forward': 'placeholder_not_implemented'},
+        'robustness': {**pr['robustness'], 'overfitting_warning': pr['robustness']['overfitting_risk_label'] in {'MEDIUM', 'HIGH'}, 'parameter_sensitivity_legacy': 'placeholder_not_implemented', 'out_of_sample_walk_forward': 'placeholder_not_implemented'},
+        'performance_and_robustness': pr,
+        'warnings': pr['warnings'],
         'regime_behavior': {'bull_score': None, 'sideways_score': None, 'bear_score': None, 'high_volatility_score': None, 'low_volatility_score': None},
         'discipline': {'journal_entries': len(journal_entries), 'mistake_count': len(mistakes), 'repeated_mistakes': repeated},
     }

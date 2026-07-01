@@ -10,12 +10,14 @@ Status date: 2026-07-01.
 - `/beta-status` shows the visible beta readiness surface in the web app.
 - CSV upload backtest is available at `POST /backtests/upload-csv`.
 - Strategy Health Score is available through Quant Coach routes.
+- Backtest reports now include `performance_and_robustness` with Sharpe, Sortino, Calmar, Recovery Factor, expectancy, drawdown, turnover/exposure estimates, and heuristic overfitting risk when enough data exists.
 - AI Backtest Explainer fallback is available without an external AI key.
 - Local Engine Bridge is available through `POST /engine/token`, `POST /engine/heartbeat`, and `GET /engine/status`.
 - C++ local engine build passed, including `quantos-engine`, `prism_backtest`, paper targets, and available tests.
 - `ctest` passed 6/6.
 - `scripts/smoke_quantos.py` passed the full local backend smoke flow.
 - Real-money trading is intentionally disabled. QuantOS remains paper trading and backtesting only.
+- Overfit risk is a heuristic warning system, not a guarantee. Walk-forward and out-of-sample validations are explicit placeholders until those workflows are implemented.
 
 ## Data and execution scope
 
@@ -31,7 +33,7 @@ Status date: 2026-07-01.
 - PASS: `cd apps/web && npm test`
 - PASS: `cd apps/web && npm run build`
 - PASS: Python 3.12 backend dependency install from `apps/api/requirements.txt`
-- PASS: backend tests: `85 passed`
+- PASS: backend tests: `92 passed`
 - PASS: `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release`
 - PASS: `cmake --build build --config Release -j2`
 - PASS: `ctest --test-dir build -C Release --output-on-failure` - 6/6 passed
@@ -43,6 +45,7 @@ Status date: 2026-07-01.
 - Local WebSocket capture/download backtest remains a local-engine path and depends on completing the network capture loop.
 - Production deployment still needs managed Postgres/Redis, observability, backups, and environment-specific hardening.
 - Docker/compose validation depends on Docker being installed locally.
+- Turnover is estimated when full notional/quantity/price data is unavailable.
 
 ## Readiness scores
 

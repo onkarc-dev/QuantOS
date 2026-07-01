@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from app.deps import current_user
 from app.db import get_conn, now
 from app.core.config import settings
+from app.services.performance_metrics import build_performance_and_robustness
 
 router = APIRouter()
 REQUIRED = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
@@ -124,6 +125,18 @@ async def upload_csv(file: UploadFile = File(...), user=Depends(current_user)):
     _write_normalized_csv(rows, normalized_path)
     closes = [float(r['close']) for r in rows]
     returns = [closes[i] - closes[i-1] for i in range(1, len(closes))]
+    proxy_trades = [
+        {
+            'trade_id': i,
+            'entry_time': rows[i - 1]['timestamp'],
+            'exit_time': rows[i]['timestamp'],
+            'r_multiple': change,
+            'holding_bars': 1,
+            'entry_price': closes[i - 1],
+            'exit_price': closes[i],
+        }
+        for i, change in enumerate(returns, start=1)
+    ]
     wins = [r for r in returns if r > 0]
     losses = [abs(r) for r in returns if r < 0]
     gross_win = sum(wins)
@@ -149,6 +162,14 @@ async def upload_csv(file: UploadFile = File(...), user=Depends(current_user)):
         'chart_data': rows[-1000:],
         'fees_slippage_note': 'Apply explicit fee/slippage settings before relying on results.',
     }
+    result['performance_and_robustness'] = build_performance_and_robustness(
+        proxy_trades,
+        start_time=rows[0]['timestamp'],
+        end_time=rows[-1]['timestamp'],
+        bars_processed=len(rows),
+        profit_factor=(gross_win / gross_loss) if gross_loss else None,
+        source_note='CSV upload uses close-to-close point changes as an R proxy because no explicit entry, stop, risk, or capital data is available.',
+    )
     result_path = output_dir / 'quantos_csv_upload_result.json'
     output_dir.mkdir(parents=True, exist_ok=True)
     result_path.write_text(json.dumps(result, indent=2), encoding='utf-8')

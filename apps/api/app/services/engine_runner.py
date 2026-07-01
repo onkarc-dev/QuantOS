@@ -22,6 +22,7 @@ from app.db import get_conn, now
 from app.services.output_reader import read_csv, read_json
 from app.services.coach import write_coach_report
 from app.services.binance_historical import fetch_real_binance_csv, yesterday_utc
+from app.services.performance_metrics import build_performance_and_robustness
 
 
 STANDARD_OUTPUTS = [
@@ -139,6 +140,15 @@ def insert_outputs(job_payload: Dict[str, Any], job_id: str, output_dir: Path):
     symbol = (job_payload.get("symbols") or ["BTCUSDT"])[0]
     trades = read_csv(output_dir / "trade_log.csv")
     summary = read_json(output_dir / "backtest_summary.json")
+    if "performance_and_robustness" not in summary:
+        summary["performance_and_robustness"] = build_performance_and_robustness(
+            trades,
+            start_time=job_payload.get("start_date"),
+            end_time=job_payload.get("end_date"),
+            bars_processed=summary.get("bars_processed"),
+            profit_factor=summary.get("profit_factor"),
+        )
+        (output_dir / "backtest_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     validation = read_json(output_dir / "setup_validation_report.json")
     snapshot = read_json(output_dir / "dashboard_snapshot.json")
     p = _p()
@@ -327,6 +337,14 @@ def run_engine_sync(job_payload: Dict[str, Any]) -> Dict[str, Any]:
     if status == "completed":
         trades = read_csv(output_dir / "trade_log.csv")
         response["summary"] = read_json(output_dir / "backtest_summary.json")
+        if "performance_and_robustness" not in response["summary"]:
+            response["summary"]["performance_and_robustness"] = build_performance_and_robustness(
+                trades,
+                start_time=job_payload.get("start_date"),
+                end_time=job_payload.get("end_date"),
+                bars_processed=response["summary"].get("bars_processed"),
+                profit_factor=response["summary"].get("profit_factor"),
+            )
         response["trade_count"] = len(trades)
         response["trades_available"] = True
         response["market_data"] = job_payload.get("market_data", {})
