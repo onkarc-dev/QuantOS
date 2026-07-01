@@ -44,4 +44,40 @@ outputs/
 node_modules/
 apps/web/node_modules/
 apps/web/.next/
+<<<<<<< HEAD
 .env
+=======
+
+# QuantOS runtime/local state
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+apps/api/prismflow.db
+apps/api/*.db
+outputs/
+logs/
+.cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.tsbuildinfo
+apps/web/tsconfig.tsbuildinfo
+apps/web/.vercel/
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# C++/CMake generated artifacts
+build_*/
+compile_commands.json
+Testing/
+_deps/
+
+# Local market-data captures; keep curated samples under data/ committed intentionally
+captures/
+local_engine_data/
+>>>>>>> b6901a4 (Pin backend runtime to Python 3.12)

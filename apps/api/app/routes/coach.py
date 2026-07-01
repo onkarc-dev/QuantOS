@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
+from pathlib import Path
 from app.db import get_conn, row_to_dict
 from app.core.config import settings
 from app.deps import current_user
@@ -52,8 +53,8 @@ def strengths_weaknesses(job_id: str, user=Depends(current_user)):
     p = "?" if not settings.is_postgres() else "%s"
     with get_conn() as conn:
         row = conn.execute(
-            f"SELECT summary_json FROM reports WHERE job_id={p}",
-            (job_id,)
+            f"SELECT summary_json FROM reports WHERE job_id={p} AND user_id={p}",
+            (job_id, user["id"])
         ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Report not found")
@@ -63,3 +64,22 @@ def strengths_weaknesses(job_id: str, user=Depends(current_user)):
         "strengths": data.get("strengths", []),
         "weaknesses": data.get("weaknesses", []),
     }
+
+
+@router.get("/{job_id}/strategy-health", summary="Get 0-100 Strategy Health Score for a completed job")
+def strategy_health(job_id: str, user=Depends(current_user)):
+    """Return QuantOS Strategy Health Score with sub-scores and warnings."""
+    import json
+    from app.services.output_reader import read_csv
+    from app.services.strategy_health import build_strategy_health_score
+    p = "?" if not settings.is_postgres() else "%s"
+    with get_conn() as conn:
+        row = conn.execute(
+            f"SELECT output_dir FROM jobs WHERE id={p} AND user_id={p}",
+            (job_id, user["id"]),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Job not found")
+    output_dir = Path(row_to_dict(row).get("output_dir", ""))
+    trades = read_csv(output_dir / "trade_log.csv")
+    return build_strategy_health_score(trades)

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 import { api, formatApiError } from "../../lib/api";
+import TradingChart from "../../components/TradingChart";
 
 type StrategyRow = {
   id: string;
@@ -566,6 +567,20 @@ export default function PaperTradingPage() {
           10 Binance USDT markets · real WebSocket market data · C++ paper
           broker · paper account equity 100000 · no real broker orders.
         </p>
+      </section>
+
+      <section style={{ ...panelStyle, marginBottom: 16 }}>
+        <h2 style={h2Style}>BTCUSDT Local Feed Chart</h2>
+        <TradingChart
+          candles={[{ time: 'latest', open: Number(primaryPrice || 0), high: Number(primaryPrice || 0), low: Number(primaryPrice || 0), close: Number(primaryPrice || 0) }]}
+          markers={tradeRows.slice(-8).map((t:any) => ({ time: 'latest', position: t.result === 'LOSS' ? 'aboveBar' : 'belowBar', text: t.result || 'TRADE', price: Number(t.exit_price || t.entry_price || primaryPrice || 0) }))}
+          lines={openPositions[0] ? [
+            { title: 'Stop', price: Number(openPositions[0].stop || 0), color: '#ef4444', style: 'dashed' as const },
+            { title: 'Target 1', price: Number(openPositions[0].target1 || 0), color: '#22c55e' },
+            { title: 'Target 2', price: Number(openPositions[0].target2 || 0), color: '#38bdf8' },
+          ].filter((x:any)=>Number(x.price)>0) : []}
+        />
+        <p style={{ color: '#fbbf24', marginBottom: 0 }}>Paper trading only. No real broker orders. No financial advice.</p>
       </section>
 
       <section style={{ ...panelStyle, marginBottom: 16 }}>

@@ -150,6 +150,7 @@ def readiness_check(project_root: Optional[Path] = None) -> Dict[str, Any]:
         "checks_total": len(checks),
         "production_ready": score >= 8.5 and not critical_blocking,
         "critical_blocking": critical_blocking,
+        "blocking_items": critical_blocking,
         "warnings": warnings,
         "honest_verdict": verdict,
         "checks": checks,

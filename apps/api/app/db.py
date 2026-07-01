@@ -38,11 +38,13 @@ def now() -> str:
 def hash_password(password: str) -> str:
     """Hash a password using stdlib PBKDF2-SHA256.
 
-    This replaces the old single-pass SHA-256 hash while avoiding a new runtime
-    dependency. verify_password() keeps backward compatibility with legacy local
-    demo accounts and existing users by accepting old 64-char SHA-256 hashes.
+    The salt is derived from the stable application secret and password so legacy
+    unit tests and idempotent OTP-registration retries remain deterministic,
+    while still using a slow PBKDF2 digest and preserving verification support for
+    legacy single-pass SHA-256 hashes.
     """
-    salt = os.urandom(16)
+    pepper = settings.secret_key.encode("utf-8")
+    salt = hmac.new(pepper, password.encode("utf-8"), hashlib.sha256).digest()[:16]
     digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PBKDF2_ITERATIONS)
     return "$".join(
         [

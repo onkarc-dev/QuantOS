@@ -231,3 +231,12 @@ target_include_directories(prism_cpp_heavy_paper PRIVATE
     cpp_engine/src/storage
     cpp_engine/src/dashboard
 )
+
+
+add_executable(quantos-engine
+    cpp_engine/src/apps/quantos_engine.cpp
+)
+
+target_include_directories(quantos-engine PRIVATE
+    cpp_engine/src
+)

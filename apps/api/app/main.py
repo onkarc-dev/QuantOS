@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.db import init_db
-from app.routes import auth, strategies, jobs, reports, analytics, coach, journal, live_paper
+from app.routes import auth, strategies, jobs, reports, analytics, coach, journal, live_paper, engine, ai, backtests
 from app.routes.system import router as system_router
 from app.services.job_queue import build_queue
 import app.services.job_queue as jq_module
@@ -23,6 +23,7 @@ logging.basicConfig(
 logger = logging.getLogger("quantos.api")
 _request_count = 0
 _error_count = 0
+_rate_limit_hits: dict[str, list[float]] = {}
 
 
 @asynccontextmanager
@@ -67,6 +68,14 @@ async def add_process_time_header(request: Request, call_next):
         proto = request.headers.get("x-forwarded-proto", request.url.scheme)
         if proto != "https" and request.url.hostname not in {"127.0.0.1", "localhost"}:
             raise HTTPException(status_code=403, detail="HTTPS is required")
+    client_host = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else "unknown")
+    now_ts = time.time()
+    if settings.rate_limit_per_minute > 0 and not request.url.path.startswith("/health"):
+        recent = [t for t in _rate_limit_hits.get(client_host, []) if now_ts - t < 60]
+        if len(recent) >= settings.rate_limit_per_minute:
+            raise HTTPException(status_code=429, detail="Rate limit exceeded")
+        recent.append(now_ts)
+        _rate_limit_hits[client_host] = recent
     start = time.perf_counter()
     _request_count += 1
     try:
@@ -113,6 +122,11 @@ def health():
     }
 
 
+@app.get("/version", tags=["system"], summary="API version")
+def version():
+    return {"product": "QuantOS", "version": app.version, "safe_mode": True, "real_money_enabled": False}
+
+
 # ─── Routers ──────────────────────────────────────────────────────────────────
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(strategies.router, prefix="/strategies", tags=["strategies"])
@@ -123,3 +137,6 @@ app.include_router(coach.router, prefix="/coach", tags=["quant-coach"])
 app.include_router(journal.router, prefix="/journal", tags=["journal-behavior"])
 app.include_router(system_router, prefix="/system", tags=["system"])
 app.include_router(live_paper.router, prefix="/live-paper", tags=["live-paper"])
+app.include_router(engine.router, prefix="/engine", tags=["local-engine"])
+app.include_router(ai.router, prefix="/ai", tags=["ai"])
+app.include_router(backtests.router, prefix="/backtests", tags=["backtests"])

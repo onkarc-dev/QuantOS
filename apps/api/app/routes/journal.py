@@ -29,6 +29,14 @@ def log_entry(entry: JournalEntry, user=Depends(current_user)):
     entry_id = str(uuid.uuid4())
     p = "?" if not settings.is_postgres() else "%s"
     with get_conn() as conn:
+        if entry.job_id:
+            job = conn.execute(f"SELECT id FROM jobs WHERE id={p} AND user_id={p}", (entry.job_id, user["id"])).fetchone()
+            if not job:
+                raise HTTPException(status_code=404, detail="Job not found for current user")
+        if entry.trade_id:
+            trade = conn.execute(f"SELECT id FROM trades WHERE id={p} AND user_id={p}", (entry.trade_id, user["id"])).fetchone()
+            if not trade:
+                raise HTTPException(status_code=404, detail="Trade not found for current user")
         conn.execute(
             f"""INSERT INTO journal_entries
             (id, user_id, job_id, trade_id, rule_broken, emotional_state, manual_override, entry_type, note, r_impact, created_at)

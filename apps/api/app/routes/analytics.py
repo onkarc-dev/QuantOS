@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends
 from app.services.output_reader import read_csv
 from app.routes.reports import job_dir
 from app.deps import current_user
+from app.services.strategy_health import build_strategy_health_score
 
 router = APIRouter()
 
@@ -24,3 +25,9 @@ def equity_curve(job_id: str, user=Depends(current_user)):
         except Exception: pass
         curve.append({"trade_id": r.get("trade_id"), "equity_R": eq})
     return curve
+
+
+@router.get("/{job_id}/strategy-health")
+def strategy_health(job_id: str, user=Depends(current_user)):
+    rows = read_csv(job_dir(user["id"], job_id)/"trade_log.csv")
+    return build_strategy_health_score(rows)
