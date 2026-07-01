@@ -29,6 +29,7 @@ from app.core.config import settings
 
 PBKDF2_PREFIX = "pbkdf2_sha256"
 PBKDF2_ITERATIONS = 260_000
+SCHEMA_VERSION = "0001_init"
 
 
 def now() -> str:
@@ -116,6 +117,10 @@ def _get_pg_conn():
 
 # ─── Schema ───────────────────────────────────────────────────────────────────
 _SQLITE_DDL = """
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version TEXT PRIMARY KEY,
+    applied_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     email TEXT UNIQUE NOT NULL,
@@ -276,6 +281,10 @@ def _init_sqlite():
     settings.api_root.mkdir(parents=True, exist_ok=True)
     with _get_sqlite_conn() as conn:
         conn.executescript(_SQLITE_DDL)
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(?,?)",
+            (SCHEMA_VERSION, now()),
+        )
         _seed_demo_user_sqlite(conn)
         conn.commit()
 
@@ -301,6 +310,14 @@ def _init_postgres():
             stmt = stmt.strip()
             if stmt:
                 cur.execute(stmt)
+        cur.execute(
+            """
+            INSERT INTO schema_migrations(version,applied_at)
+            VALUES(%s,%s)
+            ON CONFLICT(version) DO NOTHING
+            """,
+            (SCHEMA_VERSION, now()),
+        )
         cur.execute(
             """
             INSERT INTO users(id,email,name,password_hash,onboarding_completed,created_at)

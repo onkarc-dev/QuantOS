@@ -25,6 +25,9 @@ _request_count = 0
 _error_count = 0
 _rate_limit_hits: dict[str, list[float]] = {}
 
+if not settings.is_postgres():
+    init_db()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
