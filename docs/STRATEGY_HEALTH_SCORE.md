@@ -17,10 +17,10 @@ Backtest reports and Strategy Health also expose `performance_and_robustness`:
 - Risk-adjusted: Sharpe, Sortino, Calmar, Omega, Recovery Factor.
 - Expectancy: expectancy R/trade, average winner/loser R, payoff ratio, largest winner/loser R.
 - Risk: max/average drawdown R, drawdown duration, consecutive win/loss streaks, Ulcer Index.
-- Trading behavior: trades/day, turnover estimate, exposure estimate, average/median holding bars.
+- Trading behavior: trades/day, turnover raw estimate, turnover percentage estimate, formatted turnover display, exposure estimate/percentage, average/median holding bars.
 - Robustness: trade-count warning, overfitting risk label and 0-100 score, parameter-sensitivity placeholder, walk-forward placeholder, and out-of-sample placeholder.
 
-Sharpe, Sortino, and Calmar are available when enough R-multiple and drawdown dispersion exists; otherwise they return `null` rather than `0`. Turnover is estimated from notional data when present, and from trade count/holding bars when full notional data is unavailable. Overfitting risk is heuristic and not a guarantee. LOW risk is not assigned unless sufficient trades and validation evidence exist. Real-money trading remains disabled.
+Sharpe, Sortino, and Calmar are available when enough R-multiple and drawdown dispersion exists; otherwise they return `null` rather than `0`. Turnover is estimated from notional data when present, and from trade count/holding bars when full notional data is unavailable. The API exposes `turnover_raw`, `turnover_percentage`, and `turnover_display`; frontend pages show `turnover_display` instead of raw numbers. Overfitting risk is heuristic and not a guarantee. LOW risk is not assigned unless sufficient trades and validation evidence exist. Walk-forward, out-of-sample validation, and parameter sensitivity remain placeholders until implemented. Real-money trading remains disabled.
 
 ## API
 

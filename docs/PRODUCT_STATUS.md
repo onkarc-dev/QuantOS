@@ -9,8 +9,9 @@ Status date: 2026-07-01.
 - Canvas charting is no longer the primary chart path.
 - `/beta-status` shows the visible beta readiness surface in the web app.
 - CSV upload backtest is available at `POST /backtests/upload-csv`.
-- Strategy Health Score is available through Quant Coach routes.
-- Backtest reports now include `performance_and_robustness` with Sharpe, Sortino, Calmar, Recovery Factor, expectancy, drawdown, turnover/exposure estimates, and heuristic overfitting risk when enough data exists.
+- Strategy Health Score is available through Quant Coach routes, and Quant Coach now displays professional performance, risk-adjusted, drawdown, trading-behavior, and robustness sections.
+- Backtest reports now include `performance_and_robustness` with Sharpe, Sortino, Calmar, Omega, Recovery Factor, expectancy, drawdown, turnover/exposure estimates, formatted turnover percentage display, and heuristic overfitting risk when enough data exists.
+- Analytics graphs are restored for equity curve, drawdown curve, R-multiple distribution, and wins/losses, with the equity table retained below the charts.
 - AI Backtest Explainer fallback is available without an external AI key.
 - Local Engine Bridge is available through `POST /engine/token`, `POST /engine/heartbeat`, and `GET /engine/status`.
 - Live Paper Trading detects Windows, Linux, and Docker C++ binary paths and exposes safe process/feed diagnostics to the UI.
@@ -19,6 +20,7 @@ Status date: 2026-07-01.
 - `scripts/smoke_quantos.py` passed the full local backend smoke flow.
 - Real-money trading is intentionally disabled. QuantOS remains paper trading and backtesting only.
 - Overfit risk is a heuristic warning system, not a guarantee. Walk-forward and out-of-sample validations are explicit placeholders until those workflows are implemented.
+- Parameter sensitivity, walk-forward, and out-of-sample validation remain placeholders unless explicitly implemented in a future workflow.
 
 ## Data and execution scope
 
@@ -49,6 +51,8 @@ Status date: 2026-07-01.
 - Production deployment still needs managed Postgres/Redis, observability, backups, and environment-specific hardening.
 - Docker/compose validation depends on Docker being installed locally.
 - Turnover is estimated when full notional/quantity/price data is unavailable.
+- Turnover is displayed to users as a percentage estimate through `turnover_display`; the raw estimate remains available as `turnover_raw`.
+- Multi-symbol backtests can take longer than BTC-only runs. The Strategy Builder disables duplicate submissions and shows a clear running state while the backend works at job-level progress granularity.
 
 ## Readiness scores
 

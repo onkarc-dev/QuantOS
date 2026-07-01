@@ -23,7 +23,9 @@ C++ adapters live under `cpp_engine/src/adapters/MarketDataAdapter.hpp` and norm
 
 The Binance adapter foundation is available for public feed data. Live paper uses Binance public trade data only and remains paper-only. The cloud must not receive Binance API keys, broker credentials, or private account data.
 
-The backend can launch the local C++ live paper binary from Windows paths such as `build\Release\prism_live_paper_trading.exe` or Linux/Docker paths such as `/app/build/Release/prism_live_paper_trading`. The process reports safe local telemetry through parseable stdout heartbeats.
+The backend can launch the local C++ live paper binary from Windows paths such as `build\Release\prism_live_paper_trading.exe` or Linux/Docker paths such as `/app/build/Release/prism_live_paper_trading`. Windows local diagnostics prefer local `.exe` paths and do not show the Docker `/app` path. The process reports safe local telemetry through parseable stdout heartbeats.
+
+Backtests and Quant Coach use report data only. Analytics graphs are derived from stored R-multiples and equity curves, and turnover is surfaced to users as a percentage estimate while preserving the raw estimate for diagnostics.
 
 ## Cloud sync allow-list
 

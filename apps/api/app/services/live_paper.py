@@ -101,13 +101,15 @@ def _candidate_live_binary_paths(project_root: Path, override: str = "") -> List
     if override:
         p = Path(override)
         return [p if p.is_absolute() else project_root / p]
-    return [
+    candidates = [
         project_root / "build" / "Release" / LIVE_BINARY_WINDOWS_NAME,
         project_root / "build" / LIVE_BINARY_WINDOWS_NAME,
-        Path("/app/build/Release") / LIVE_BINARY_NAME,
         project_root / "build" / "Release" / LIVE_BINARY_NAME,
         project_root / "build" / LIVE_BINARY_NAME,
     ]
+    if os.name != "nt":
+        candidates.insert(2, Path("/app/build/Release") / LIVE_BINARY_NAME)
+    return candidates
 
 
 def resolve_live_paper_binary(project_root: Path | None = None, override: str | None = None) -> Dict[str, Any]:

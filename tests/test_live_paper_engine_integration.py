@@ -28,6 +28,15 @@ def test_live_binary_resolution_windows_style_path(tmp_path):
     assert str(binary) in out["checked_paths"]
 
 
+def test_live_binary_resolution_hides_docker_path_on_windows(tmp_path, monkeypatch):
+    monkeypatch.setattr(live_paper.os, "name", "nt")
+
+    out = resolve_live_paper_binary(tmp_path, override="")
+
+    assert not any(path.startswith("/app/build") for path in out["checked_paths"])
+    assert any(path.endswith("build\\Release\\prism_live_paper_trading.exe") or path.endswith("build/Release/prism_live_paper_trading.exe") for path in out["checked_paths"])
+
+
 def test_live_binary_resolution_linux_style_path(tmp_path):
     binary = tmp_path / "build" / "Release" / "prism_live_paper_trading"
     binary.parent.mkdir(parents=True)

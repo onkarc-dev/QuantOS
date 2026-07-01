@@ -68,3 +68,12 @@ def test_no_walk_forward_and_out_of_sample_warnings():
     assert out["robustness"]["out_of_sample"]["available"] is False
     assert any("No walk-forward" in w for w in out["warnings"])
     assert any("No out-of-sample" in w for w in out["warnings"])
+
+
+def test_turnover_display_exposes_raw_percentage_and_percent_text():
+    out = build_performance_and_robustness([t(0.5, holding=2), t(-0.2, holding=4)])
+    behavior = out["trading_behavior"]
+    assert behavior["turnover_raw"] == 6
+    assert behavior["turnover_percentage"] == 6
+    assert behavior["turnover_display"] == "6%"
+    assert behavior["turnover_display"].endswith("%")

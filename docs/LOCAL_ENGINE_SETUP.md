@@ -22,7 +22,7 @@ Current local result: C++ configure/build passed and `ctest` passed 6/6.
 
 ## Live paper binary paths
 
-The backend detects the live paper binary in these locations:
+The backend detects the live paper binary in these locations. On Windows local runs it checks Windows/local paths and does not surface the Docker `/app` path in diagnostics.
 
 - Windows release: `build\Release\prism_live_paper_trading.exe`
 - Windows fallback: `build\prism_live_paper_trading.exe`
@@ -57,6 +57,8 @@ Linux/macOS/Docker:
 The UI shows connected/disconnected state, exchange/source, mode, last heartbeat, engine version, latest price, and p50/p95/p99 internal latency.
 
 The Paper Trading page starts `prism_live_paper_trading` through the backend in managed paper mode. The C++ process may emit safe lines like `QUANTOS_HEARTBEAT {...}` with symbol, latest price, equity, cash, unrealized P&L, position quantity, trade count, latency, and feed status. Secrets are never included.
+
+If the live paper binary is missing, the Paper Trading debug area shows the exact checked paths and the build command. Live paper remains local and paper-only; it does not pass exchange secrets and does not enable real-money trading.
 
 ## Safe sync contract
 

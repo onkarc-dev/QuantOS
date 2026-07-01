@@ -20,6 +20,14 @@ def _round(value: float | None, digits: int = 6) -> float | None:
     return round(value, digits)
 
 
+def _display_percent(value: float | None, digits: int = 2) -> str:
+    rounded = _round(value, digits)
+    if rounded is None:
+        return "Not enough data"
+    text = f"{rounded:.{digits}f}".rstrip("0").rstrip(".")
+    return f"{text}%"
+
+
 def _parse_dt(value: Any) -> datetime | None:
     if not value:
         return None
@@ -161,7 +169,9 @@ def build_performance_and_robustness(
         if notional is not None:
             notionals.append(abs(notional))
     turnover_estimate = sum(notionals) if notionals else (n * (mean(holding) if holding else 1.0) if n else None)
+    turnover_percentage = turnover_estimate
     exposure = (sum(holding) / float(bars_processed)) if holding and bars_processed else None
+    exposure_percentage = exposure * 100 if exposure is not None else None
     trades_per_day = (n / span_days) if span_days else None
     warnings: list[str] = []
     if n < 30:
@@ -228,9 +238,14 @@ def build_performance_and_robustness(
         },
         "trading_behavior": {
             "trades_per_day": _round(trades_per_day),
+            "turnover_raw": _round(turnover_estimate),
+            "turnover_percentage": _round(turnover_percentage),
+            "turnover_display": _display_percent(turnover_percentage),
             "turnover_estimate": _round(turnover_estimate),
             "turnover_estimate_note": "Estimated from notional where present; otherwise from trade count and holding bars.",
             "exposure_estimate": _round(exposure),
+            "exposure_percentage": _round(exposure_percentage),
+            "exposure_display": _display_percent(exposure_percentage),
             "average_holding_bars": _round(mean(holding) if holding else None),
             "median_holding_bars": _round(median(holding) if holding else None),
         },

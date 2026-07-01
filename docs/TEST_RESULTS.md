@@ -32,6 +32,7 @@ Date: 2026-07-01.
 - strategy health score through Quant Coach
 - `performance_and_robustness` existence after CSV upload/backtest
 - overfitting risk, Sharpe/Sortino/Calmar keys, and warnings list
+- turnover display shape: raw value, percent-like numeric value, and percent text
 - AI explainer fallback
 - `/engine/token`
 - `/engine/heartbeat`
@@ -52,4 +53,7 @@ The script prints clear `PASS`/`FAIL` lines for each step.
 - Real-money trading remains disabled.
 - Live paper local-engine integration supports Windows and Linux/Docker binary paths and remains paper-only with no real broker orders.
 - Backtest metrics now cover Sharpe, Sortino, Calmar, Recovery Factor, expectancy, estimated turnover, and overfitting risk. Ratio values are `null` when the available R-multiple data is insufficient.
-- Walk-forward and out-of-sample validation are placeholders until implemented.
+- Quant Coach now exposes the professional robustness metrics, and Analytics restores equity, drawdown, distribution, and wins/losses graphs from report data.
+- Turnover is displayed as a percentage estimate in the UI through `turnover_display`, while raw turnover remains available for diagnostics.
+- Multi-symbol backtests can take longer than single-symbol runs; the UI disables repeat submissions and reports job-level progress while the backend runs.
+- Walk-forward, out-of-sample validation, and parameter sensitivity are placeholders until implemented.

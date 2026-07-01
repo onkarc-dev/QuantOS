@@ -20,13 +20,14 @@ function PerformanceRobustness({data}:{data:any}){
     <div><b>Sharpe</b><div className="metric">{metric(ra.sharpe)}</div></div>
     <div><b>Sortino</b><div className="metric">{metric(ra.sortino)}</div></div>
     <div><b>Calmar</b><div className="metric">{metric(ra.calmar)}</div></div>
+    <div><b>Omega</b><div className="metric">{metric(ra.omega)}</div></div>
     <div><b>Recovery Factor</b><div className="metric">{metric(ra.recovery_factor)}</div></div>
     <div><b>Expectancy R/trade</b><div className="metric">{metric(ex.expectancy_R_per_trade,'R')}</div></div>
     <div><b>Avg Winner / Loser</b><div className="metric">{metric(ex.average_winner_R,'R')} / {metric(ex.average_loser_R,'R')}</div></div>
     <div><b>Largest Winner / Loser</b><div className="metric">{metric(ex.largest_winner_R,'R')} / {metric(ex.largest_loser_R,'R')}</div></div>
-    <div><b>Turnover Estimate</b><div className="metric">{metric(tb.turnover_estimate)}</div></div>
+    <div><b>Turnover %</b><div className="metric">{tb.turnover_display || 'Not enough data'}</div></div>
     <div><b>Trades/day</b><div className="metric">{metric(tb.trades_per_day)}</div></div>
-    <div><b>Exposure Estimate</b><div className="metric">{metric(tb.exposure_estimate,'',3)}</div></div>
+    <div><b>Exposure %</b><div className="metric">{tb.exposure_display || 'Not enough data'}</div></div>
     <div><b>Max Wins/Losses</b><div className="metric">{risk.max_consecutive_wins ?? 0} / {risk.max_consecutive_losses ?? 0}</div></div>
     <div><b>Ulcer Index</b><div className="metric">{metric(risk.ulcer_index)}</div></div>
     <div><b>Overfitting Risk</b><div className="metric">{robust.overfitting_risk_label || 'Not enough data'} {robust.overfitting_risk_score ?? ''}</div></div>

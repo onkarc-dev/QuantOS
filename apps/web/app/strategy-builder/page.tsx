@@ -123,6 +123,8 @@ export default function StrategyBuilder() {
   const [msg, setMsg] = useState(
     "Login first, then save a strategy and run a backtest.",
   );
+  const [running, setRunning] = useState(false);
+  const [runProgress, setRunProgress] = useState("");
   const [startDate, setStartDate] = useState(startIso());
   const [endDate, setEndDate] = useState(yesterdayIso());
   function upd(k: keyof Cfg, v: any) {
@@ -207,13 +209,27 @@ export default function StrategyBuilder() {
     for (let i = 0; i < 20; i++) {
       const j: any = await api(`/jobs/${jobId}`);
       setPollJob(j);
+      const total = payload.symbols.length;
+      if (total > 1) {
+        setRunProgress(
+          `Running selected basket (${total} symbols). Backend progress is job-level, so per-symbol completions will appear when the report finishes. Poll ${i + 1} / 20.`,
+        );
+      }
       if (j.status === "completed" || j.status === "failed") return j;
       await new Promise((r) => setTimeout(r, 1000));
     }
     return null;
   }
   async function run() {
+    if (running) return;
+    const selectedSymbols = payload.symbols;
     try {
+      setRunning(true);
+      setRunProgress(
+        selectedSymbols.length > 1
+          ? `Symbol 1 / ${selectedSymbols.length}. Running ${selectedSymbols[0]}... Multi-symbol backtests can take longer.`
+          : `Running ${selectedSymbols[0] || "selected symbol"}...`,
+      );
       setMsg("Submitting backtest...");
       setJob(null);
       setPollJob(null);
@@ -245,16 +261,29 @@ export default function StrategyBuilder() {
       setMsg(
         `${r.status === "completed" ? "Backtest completed" : "Backtest submitted"}. Job: ${r.job_id}`,
       );
+      if (selectedSymbols.length > 1 && r.status === "completed") {
+        setRunProgress(`Completed ${selectedSymbols.length} / ${selectedSymbols.length} selected symbols.`);
+      }
       if (r.job_id && r.status !== "completed" && r.status !== "failed") {
         setMsg("Backtest queued. Polling job status...");
         const finalJob = await poll(r.job_id);
-        if (finalJob) setMsg(`Backtest ${finalJob.status}. Job: ${r.job_id}`);
+        if (finalJob) {
+          setMsg(`Backtest ${finalJob.status}. Job: ${r.job_id}`);
+          if (selectedSymbols.length > 1 && finalJob.status === "completed") {
+            setRunProgress(`Completed ${selectedSymbols.length} / ${selectedSymbols.length} selected symbols.`);
+          }
+        } else {
+          setRunProgress("Still waiting on the backend. Refresh Backtests for final status if this request times out.");
+        }
       } else if (r.status === "failed")
         setMsg(
           "Backtest failed: " + (r.error || r.error_message || "Unknown error"),
         );
     } catch (e: any) {
       setMsg("Backtest failed: " + e.message);
+      setRunProgress("Backtest request failed before completion.");
+    } finally {
+      setRunning(false);
     }
   }
 
@@ -615,10 +644,16 @@ export default function StrategyBuilder() {
         </div>
         <div style={{ marginTop: 16 }}>
           <button onClick={save}>Save Strategy</button>{" "}
-          <button className="secondary" onClick={run}>
-            Run Backtest
+          <button className="secondary" onClick={run} disabled={running}>
+            {running ? "Running Backtest..." : "Run Backtest"}
           </button>
         </div>
+        {runProgress && (
+          <div className="card" style={{ background: "#0f172a", margin: "12px 0 0" }}>
+            <b>Backtest progress</b>
+            <p className="muted" style={{ marginBottom: 0 }}>{runProgress}</p>
+          </div>
+        )}
         <p className="muted" style={{ marginTop: 10 }}>
           {msg}
         </p>
@@ -774,13 +809,14 @@ function BacktestResult({ job, pollJob }: { job: any; pollJob: any }) {
           <Kpi label="Sharpe" value={metric(ra.sharpe)} />
           <Kpi label="Sortino" value={metric(ra.sortino)} />
           <Kpi label="Calmar" value={metric(ra.calmar)} />
+          <Kpi label="Omega" value={metric(ra.omega)} />
           <Kpi label="Recovery Factor" value={metric(ra.recovery_factor)} />
           <Kpi label="Expectancy" value={metric(ex.expectancy_R_per_trade, "R")} color={signedClass(ex.expectancy_R_per_trade)} />
           <Kpi label="Avg Winner / Loser" value={`${metric(ex.average_winner_R, "R")} / ${metric(ex.average_loser_R, "R")}`} />
           <Kpi label="Largest Winner / Loser" value={`${metric(ex.largest_winner_R, "R")} / ${metric(ex.largest_loser_R, "R")}`} />
-          <Kpi label="Turnover Estimate" value={metric(tb.turnover_estimate)} />
+          <Kpi label="Turnover %" value={tb.turnover_display || "Not enough data"} />
           <Kpi label="Trades / Day" value={metric(tb.trades_per_day)} />
-          <Kpi label="Exposure Estimate" value={metric(tb.exposure_estimate, "", 3)} />
+          <Kpi label="Exposure %" value={tb.exposure_display || "Not enough data"} />
           <Kpi label="Max Win / Loss Streak" value={`${risk.max_consecutive_wins ?? 0} / ${risk.max_consecutive_losses ?? 0}`} />
           <Kpi label="Ulcer Index" value={metric(risk.ulcer_index)} />
           <Kpi label="Overfitting Risk" value={`${robust.overfitting_risk_label || "Not enough data"} ${robust.overfitting_risk_score ?? ""}`} />
