@@ -1,11 +1,11 @@
 import time
 from pathlib import Path
-from fastapi import APIRouter, Depends, Body
+from fastapi import APIRouter, Depends, Body, HTTPException
 
 from app.core.config import settings
 from app.deps import current_user
 from app.services.data_manager import validate_market_csv
-from app.services.live_paper import manager
+from app.services.live_paper import manager, validate_live_start_request
 from app.services import live_paper_perf as _live_paper_perf
 
 _live_paper_perf.install_live_paper_wallet_throttle(manager)
@@ -42,6 +42,9 @@ def start_live_paper(payload: dict = Body(default={}), user=Depends(current_user
     symbols = payload.get('symbols') or []
     if isinstance(symbols, str):
         symbols = [symbols]
+    guard = validate_live_start_request(user_id, strategy_id=strategy_id, symbols=symbols)
+    if not guard.get("ok"):
+        raise HTTPException(status_code=int(guard.get("status_code") or 422), detail=guard["message"])
     _invalidate_status_cache(user_id)
     result = manager.start(user_id, strategy_id=strategy_id, symbols=symbols)
     _STATUS_CACHE[user_id] = (time.time(), result)

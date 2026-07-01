@@ -33,6 +33,11 @@ type LiveStatus = {
   unrealized_pnl?: number;
   open_position?: unknown;
   open_positions_detail?: any[];
+  open_positions?: any[];
+  selected_symbols?: string[];
+  active_symbols?: string[];
+  candles?: Record<string, any[]>;
+  recent_candles?: any[];
   events?: any[];
   stdout_tail?: string[];
   error?: string;
@@ -78,6 +83,8 @@ const SUPPORTED_SYMBOLS = [
   "LINKUSDT",
   "TRXUSDT",
 ];
+const ONE_SECOND_MEMORY_WARNING =
+  "1s multi-symbol live paper can exhaust Windows memory/pagefile. Start with BTCUSDT only.";
 
 function money(v: unknown) {
   const n = typeof v === "number" ? v : Number(v || 0);
@@ -87,6 +94,12 @@ function money(v: unknown) {
 function asNum(v: any) {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
+}
+function displayValue(v: any, formatter?: (value: any) => string) {
+  if (v === undefined || v === null || v === "" || v === "-") return "not available";
+  const n = Number(v);
+  if (Number.isFinite(n) && n === 0) return formatter ? formatter(n) : "0";
+  return formatter ? formatter(v) : String(v);
 }
 function cleanTime(v: any) {
   if (!v) return "-";
@@ -133,8 +146,8 @@ function inferResult(entry: any, exit: any, rValue: any, side = "BUY") {
 
   const r = Number(rValue);
   if (Number.isFinite(r)) {
-    if (r > 0.05) return "WIN";
-    if (r < -0.05) return "LOSS";
+    if (r > 0.01) return "WIN";
+    if (r < -0.01) return "LOSS";
     return "BREAKEVEN";
   }
   return "-";
@@ -299,7 +312,11 @@ function slippageInTradeDirection(t: any) {
 }
 
 function buildOpenPositions(status: LiveStatus, tradeRows: any[]) {
-  const details = Array.isArray(status.open_positions_detail) ? status.open_positions_detail : [];
+  const details = Array.isArray(status.open_positions_detail)
+    ? status.open_positions_detail
+    : Array.isArray(status.open_positions)
+      ? status.open_positions
+      : [];
   if (details.length) return details;
 
   const states = (status as any).symbol_states || {};
@@ -314,7 +331,7 @@ function buildOpenPositions(status: LiveStatus, tradeRows: any[]) {
       target1: st.target1,
       target2: st.target2,
       current_price: st.last_price,
-      current_R: st.current_R,
+      current_R: st.current_R ?? st.current_r,
       unrealized_pnl: st.unrealized_pnl,
     }));
   if (byState.length) return byState;
@@ -356,6 +373,7 @@ export default function PaperTradingPage() {
   const [strategies, setStrategies] = useState<StrategyRow[]>([]);
   const [selectedStrategyId, setSelectedStrategyId] = useState("");
   const [selectedSymbols, setSelectedSymbols] = useState<string[]>(["BTCUSDT"]);
+  const [chartSymbol, setChartSymbol] = useState("BTCUSDT");
   const [message, setMessage] = useState(
     "Real-time Binance BTCUSDT live paper mode. No real-money execution.",
   );
@@ -376,9 +394,10 @@ export default function PaperTradingPage() {
       const list = Array.isArray(rows) ? rows : [];
       setStrategies(list);
       if (!selectedStrategyId && list.length) {
+        const firstBarSeconds = Number(list[0].config?.bar_seconds || 60);
         setSelectedStrategyId(list[0].id);
         setSelectedSymbols(
-          list[0].symbols?.length ? list[0].symbols : ["BTCUSDT"],
+          firstBarSeconds <= 1 ? ["BTCUSDT"] : list[0].symbols?.length ? list[0].symbols : ["BTCUSDT"],
         );
       }
     } catch (err) {
@@ -390,17 +409,31 @@ export default function PaperTradingPage() {
   }
 
   function toggleLiveSymbol(sym: string) {
+    if (Number(activeBarSeconds) <= 1 && sym !== "BTCUSDT" && !selectedSymbols.includes(sym)) {
+      setMessage(ONE_SECOND_MEMORY_WARNING);
+      return;
+    }
     const set = new Set(selectedSymbols);
     set.has(sym) ? set.delete(sym) : set.add(sym);
     const next = [...set];
     setSelectedSymbols(next.length ? next : ["BTCUSDT"]);
   }
   function selectAllLiveSymbols() {
+    if (Number(activeBarSeconds) <= 1) {
+      setSelectedSymbols(["BTCUSDT"]);
+      setMessage(ONE_SECOND_MEMORY_WARNING);
+      return;
+    }
     setSelectedSymbols([...SUPPORTED_SYMBOLS]);
   }
   function useStrategySymbols() {
     const st = strategies.find((s) => s.id === selectedStrategyId);
-    setSelectedSymbols(st?.symbols?.length ? st.symbols : ["BTCUSDT"]);
+    const barSeconds = Number(st?.config?.bar_seconds || activeBarSeconds || 60);
+    const symbols = st?.symbols?.length ? st.symbols : ["BTCUSDT"];
+    setSelectedSymbols(barSeconds <= 1 ? ["BTCUSDT"] : symbols);
+    if (barSeconds <= 1 && symbols.length > 1) {
+      setMessage(ONE_SECOND_MEMORY_WARNING);
+    }
   }
 
   async function start() {
@@ -536,6 +569,14 @@ export default function PaperTradingPage() {
     selectedConfig.bar_seconds ||
     selectedStrategy?.config?.bar_seconds ||
     "-";
+  const activeBarSecondsNum = Number(activeBarSeconds);
+  const isOneSecondLive = Number.isFinite(activeBarSecondsNum) && activeBarSecondsNum <= 1;
+  const isFastLive = Number.isFinite(activeBarSecondsNum) && activeBarSecondsNum <= 5;
+  const symbolWarning = isOneSecondLive
+    ? ONE_SECOND_MEMORY_WARNING
+    : isFastLive && selectedSymbols.length > 3
+      ? "5s or faster live paper is limited to 3 symbols on this local engine to protect Windows memory/pagefile."
+      : "";
   const tradeRows = useMemo(() => buildTradeRows(events), [events]);
   const openPositions = useMemo(() => buildOpenPositions(status, tradeRows), [status, tradeRows]);
   const marketRows = Array.isArray(status.markets)
@@ -553,6 +594,17 @@ export default function PaperTradingPage() {
     primaryMarket?.symbol ||
     (status.symbol && status.symbol !== "MULTI" ? status.symbol : selectedSymbols[0]) ||
     "Market";
+  const chartSymbols = Array.from(new Set([
+    ...(status.active_symbols || []),
+    ...(status.selected_symbols || liveConfig.symbols || selectedSymbols || []),
+    primarySymbol,
+  ].filter(Boolean).map((x: any) => String(x).toUpperCase())));
+  const selectedChartSymbol = chartSymbols.includes(chartSymbol) ? chartSymbol : String(primarySymbol || "BTCUSDT").toUpperCase();
+  const chartCandles = (
+    status.candles?.[selectedChartSymbol] ||
+    (selectedChartSymbol === primarySymbol ? status.recent_candles : []) ||
+    []
+  ).filter((c: any) => Number(c?.open) > 0 && Number(c?.high) > 0 && Number(c?.low) > 0 && Number(c?.close) > 0);
   const heartbeat = status.last_heartbeat || {};
   const primaryPrice = heartbeat.latest_price ?? primaryMarket?.latest_price ?? status.last_price;
   const openTrade = Number(metrics.open_trade || metrics.open_positions || 0);
@@ -563,6 +615,8 @@ export default function PaperTradingPage() {
   const canStart =
     !busy &&
     !locked &&
+    !(isOneSecondLive && selectedSymbols.length > 1) &&
+    !(isFastLive && selectedSymbols.length > 3) &&
     status.status !== "running" &&
     status.status !== "starting";
   const canStop =
@@ -595,16 +649,36 @@ export default function PaperTradingPage() {
       </section>
 
       <section style={{ ...panelStyle, marginBottom: 16 }}>
-        <h2 style={h2Style}>BTCUSDT Local Feed Chart</h2>
-        <TradingChart
-          candles={[{ time: 'latest', open: Number(primaryPrice || 0), high: Number(primaryPrice || 0), low: Number(primaryPrice || 0), close: Number(primaryPrice || 0) }]}
-          markers={tradeRows.slice(-8).map((t:any) => ({ time: 'latest', position: t.result === 'LOSS' ? 'aboveBar' : 'belowBar', text: t.result || 'TRADE', price: Number(t.exit_price || t.entry_price || primaryPrice || 0) }))}
-          lines={openPositions[0] ? [
-            { title: 'Stop', price: Number(openPositions[0].stop || 0), color: '#ef4444', style: 'dashed' as const },
-            { title: 'Target 1', price: Number(openPositions[0].target1 || 0), color: '#22c55e' },
-            { title: 'Target 2', price: Number(openPositions[0].target2 || 0), color: '#38bdf8' },
-          ].filter((x:any)=>Number(x.price)>0) : []}
-        />
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
+          <h2 style={{ ...h2Style, marginBottom: 0 }}>{selectedChartSymbol} Local Feed Chart</h2>
+          <select
+            value={selectedChartSymbol}
+            onChange={(e) => setChartSymbol(e.target.value)}
+            style={inputStyle}
+          >
+            {chartSymbols.map((sym) => <option key={sym} value={sym}>{sym}</option>)}
+          </select>
+        </div>
+        {chartCandles.length ? (
+          <TradingChart
+            candles={chartCandles}
+            markers={tradeRows.slice(-8).map((t:any) => ({
+              time: chartCandles[chartCandles.length - 1]?.time,
+              position: t.result === 'LOSS' ? 'aboveBar' : 'belowBar',
+              text: t.status === "OPEN" ? "OPEN" : t.result || 'TRADE',
+              price: Number(t.exit_price || t.entry_price || primaryPrice || 0),
+            }))}
+            lines={openPositions.find((p: any) => String(p.symbol || "").toUpperCase() === selectedChartSymbol) ? [
+              { title: 'Stop', price: Number(openPositions.find((p: any) => String(p.symbol || "").toUpperCase() === selectedChartSymbol)?.stop || 0), color: '#ef4444', style: 'dashed' as const },
+              { title: 'Target 1', price: Number(openPositions.find((p: any) => String(p.symbol || "").toUpperCase() === selectedChartSymbol)?.target1 || 0), color: '#22c55e' },
+              { title: 'Target 2', price: Number(openPositions.find((p: any) => String(p.symbol || "").toUpperCase() === selectedChartSymbol)?.target2 || 0), color: '#38bdf8' },
+            ].filter((x:any)=>Number(x.price)>0) : []}
+          />
+        ) : (
+          <div style={{ height: 320, border: "1px dashed #334155", borderRadius: 8, display: "grid", placeItems: "center", color: "#94a3b8", background: "#0f172a" }}>
+            Waiting for live ticks...
+          </div>
+        )}
         <p style={{ color: '#fbbf24', marginBottom: 0 }}>Paper trading only. No real broker orders. No financial advice.</p>
       </section>
 
@@ -682,7 +756,8 @@ export default function PaperTradingPage() {
               <button
                 type="button"
                 onClick={selectAllLiveSymbols}
-                disabled={!canStart}
+                disabled={!canStart || isOneSecondLive}
+                title={isOneSecondLive ? "1s live paper starts with BTCUSDT only to protect local memory." : "Select all supported symbols"}
               >
                 Select all
               </button>{" "}
@@ -702,7 +777,7 @@ export default function PaperTradingPage() {
                 <input
                   type="checkbox"
                   checked={selectedSymbols.includes(sym)}
-                  disabled={!canStart}
+                  disabled={!canStart || (isOneSecondLive && sym !== "BTCUSDT")}
                   onChange={() => toggleLiveSymbol(sym)}
                 />
                 <span>{sym}</span>
@@ -714,6 +789,11 @@ export default function PaperTradingPage() {
             live mode starts one C++ Binance WebSocket paper engine per selected
             symbol.
           </p>
+          {(symbolWarning || ONE_SECOND_MEMORY_WARNING) && (
+            <div style={{ marginTop: 10, padding: 12, border: "1px solid #f59e0b", borderRadius: 8, color: "#fde68a", background: "#451a03" }}>
+              {symbolWarning || ONE_SECOND_MEMORY_WARNING}
+            </div>
+          )}
         </div>
       </section>
 
@@ -768,7 +848,8 @@ export default function PaperTradingPage() {
           <Mini label="Readiness" value={status.engine_ready ? "Engine ready" : "Binary missing"} />
           <Mini label="Process" value={status.process_running ? "Running" : "Stopped"} />
           <Mini label="Feed" value={String(status.feed_status || (status.engine_ready ? "ready" : "binary_missing")).replaceAll("_", " ")} />
-          <Mini label="Heartbeat" value={status.last_heartbeat_at ? cleanTime(status.last_heartbeat_at) : "waiting for feed"} />
+          <Mini label="Heartbeat" value={status.last_heartbeat_at ? cleanTime(status.last_heartbeat_at) : "waiting for heartbeat"} />
+          <Mini label="Active symbols" value={`${status.active_symbols?.length || 0} / ${status.selected_symbols?.length || selectedSymbols.length}`} />
         </div>
         <details style={{ marginTop: 12 }}>
           <summary style={{ cursor: "pointer", color: "#93c5fd", fontWeight: 800 }}>Debug: local binary resolution</summary>
@@ -857,7 +938,7 @@ export default function PaperTradingPage() {
         />
         <Card
           label="P95 engine"
-          value={metrics.p95_engine_us ? `${metrics.p95_engine_us} μs` : "-"}
+          value={metrics.p95_engine_us ? `${metrics.p95_engine_us} us` : "not available"}
         />
         <Card label="Strategy ID" value={activeStrategyId || "-"} />
         <Card
@@ -869,9 +950,9 @@ export default function PaperTradingPage() {
       <section style={{ ...panelStyle, marginBottom: 20 }}>
         <h2 style={h2Style}>10 Binance Markets Monitor</h2>
         <p style={{ color: "#94a3b8", fontSize: 13, marginBottom: 10 }}>
-          All 10 supported paper markets are listed here. Rows marked
-          ACTIVE_WEBSOCKET are running live paper trading with their own C++
-          Binance WebSocket stream.
+          All 10 supported paper markets are listed here. ACTIVE_WEBSOCKET rows
+          have emitted live ticks; WAITING rows are selected but have not emitted
+          telemetry yet.
         </p>
         <div style={{ overflowX: "auto" }}>
           <table
@@ -909,13 +990,13 @@ export default function PaperTradingPage() {
                       </span>
                     </Td>
                     <Td>
-                      {m.latest_price ? `$${money(m.latest_price)}` : "-"}
+                      {m.latest_price ? `$${money(m.latest_price)}` : "waiting"}
                     </Td>
-                    <Td>{m.messages || 0}</Td>
-                    <Td>{m.bars || 0}</Td>
-                    <Td>{m.signals || 0}</Td>
-                    <Td>{m.trades || 0}</Td>
-                    <Td>{m.p95_engine_us ? `${m.p95_engine_us} μs` : "-"}</Td>
+                    <Td>{m.paper_status === "SUPPORTED" ? "not started" : m.messages || 0}</Td>
+                    <Td>{m.paper_status === "SUPPORTED" ? "not started" : m.bars || 0}</Td>
+                    <Td>{m.paper_status === "SUPPORTED" ? "not started" : m.signals || 0}</Td>
+                    <Td>{m.paper_status === "SUPPORTED" ? "not started" : m.trades || 0}</Td>
+                    <Td>{m.p95_engine_us ? `${m.p95_engine_us} us` : "waiting"}</Td>
                   </tr>
                 ))
               ) : (
@@ -963,13 +1044,13 @@ export default function PaperTradingPage() {
                     <tr key={`${p.symbol || "POS"}-${i}`}>
                       <Td><span style={{ color: "#93c5fd", fontWeight: 800 }}>{p.symbol || "-"}</span></Td>
                       <Td>{p.side || "BUY"}</Td>
-                      <Td>{p.entry_price ? `$${money(p.entry_price)}` : "-"}</Td>
-                      <Td>{p.qty || "-"}</Td>
-                      <Td>{p.current_price ? `$${money(p.current_price)}` : "-"}</Td>
-                      <Td><span style={signedStyle(p.current_R)}>{p.current_R !== undefined && p.current_R !== "" ? `${Number(p.current_R).toFixed(3)}R` : "-"}</span></Td>
-                      <Td><span style={signedStyle(p.unrealized_pnl)}>{p.unrealized_pnl !== undefined && p.unrealized_pnl !== "" ? `$${money(p.unrealized_pnl)}` : "-"}</span></Td>
-                      <Td>{p.stop ? `$${money(p.stop)}` : "-"}</Td>
-                      <Td>{p.target1 ? `$${money(p.target1)} / $${money(p.target2)}` : "-"}</Td>
+                      <Td>{displayValue(p.entry_price, (v) => `$${money(v)}`)}</Td>
+                      <Td>{displayValue(p.qty)}</Td>
+                      <Td>{displayValue(p.current_price, (v) => `$${money(v)}`)}</Td>
+                      <Td><span style={signedStyle(p.current_R)}>{displayValue(p.current_R, (v) => `${Number(v).toFixed(3)}R`)}</span></Td>
+                      <Td><span style={signedStyle(p.unrealized_pnl)}>{displayValue(p.unrealized_pnl, (v) => `$${money(v)}`)}</span></Td>
+                      <Td>{displayValue(p.stop, (v) => `$${money(v)}`)}</Td>
+                      <Td>{p.target1 ? `$${money(p.target1)} / ${displayValue(p.target2, (v) => `$${money(v)}`)}` : "not available"}</Td>
                     </tr>
                   ))}
                 </tbody>

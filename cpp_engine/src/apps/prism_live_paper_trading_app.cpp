@@ -237,6 +237,7 @@ void close_paper_trade(const std::string& reason, double exit_price, uint64_t ts
     const double risk_per_unit = std::max(0.01, std::abs(state.open_entry - state.open_stop));
     const double r_multiple = (exit_price - state.open_entry) / risk_per_unit;
     const double estimated_pnl = (exit_price - state.open_entry) * state.open_qty;
+    constexpr double kBreakevenR = 0.01;
 
     OrderRequest req;
     req.client_order_id = next_order_id++;
@@ -251,12 +252,12 @@ void close_paper_trade(const std::string& reason, double exit_price, uint64_t ts
     state.total_trades++;
     state.gross_r += r_multiple;
     state.avg_r = state.total_trades ? state.gross_r / static_cast<double>(state.total_trades) : 0.0;
-    if (r_multiple > 0.05) {
+    if (r_multiple > kBreakevenR) {
         state.wins++;
         state.current_consecutive_wins++;
         state.current_consecutive_losses = 0;
         state.max_consecutive_wins = std::max(state.max_consecutive_wins, state.current_consecutive_wins);
-    } else if (r_multiple < -0.05) {
+    } else if (r_multiple < -kBreakevenR) {
         state.losses++;
         state.current_consecutive_losses++;
         state.current_consecutive_wins = 0;
@@ -268,7 +269,7 @@ void close_paper_trade(const std::string& reason, double exit_price, uint64_t ts
     }
 
     state.last_action = "PAPER_SELL_FILL";
-    state.last_result = r_multiple > 0.05 ? "WIN" : (r_multiple < -0.05 ? "LOSS" : "BREAKEVEN");
+    state.last_result = r_multiple > kBreakevenR ? "WIN" : (r_multiple < -kBreakevenR ? "LOSS" : "BREAKEVEN");
     state.last_symbol = state.open_symbol;
     state.last_side = "SELL";
     state.last_entry = state.open_entry;
@@ -311,6 +312,7 @@ void close_paper_trade(const std::string& reason, double exit_price, uint64_t ts
 
     std::cout << "PAPER_SELL_FILL symbol=" << state.last_symbol
               << " result=" << state.last_result
+              << " qty=" << req.quantity
               << " entry=" << state.last_entry
               << " exit=" << state.last_exit
               << " stop=" << state.last_stop
@@ -535,7 +537,34 @@ int main(int argc, char** argv) {
                       << "\"realized_pnl\":" << portfolio.total_realized_pnl() << ","
                       << "\"unrealized_pnl\":" << portfolio.total_unrealized_pnl() << ","
                       << "\"position_qty\":" << snapshot_state.open_qty << ","
+                      << "\"open_side\":\"" << (snapshot_state.open_trade ? snapshot_state.open_side : "") << "\","
+                      << "\"open_qty\":" << snapshot_state.open_qty << ","
+                      << "\"open_entry\":" << snapshot_state.open_entry << ","
+                      << "\"open_stop\":" << snapshot_state.open_stop << ","
+                      << "\"target1\":" << snapshot_state.open_target1 << ","
+                      << "\"target2\":" << snapshot_state.open_target2 << ","
+                      << "\"current_R\":" << snapshot_state.open_current_r << ","
+                      << "\"open_positions\":[";
+            if (snapshot_state.open_trade && snapshot_state.open_qty > 0.0) {
+                std::cout << "{\"symbol\":\"" << args.symbol << "\","
+                          << "\"side\":\"" << snapshot_state.open_side << "\","
+                          << "\"entry_price\":" << snapshot_state.open_entry << ","
+                          << "\"qty\":" << snapshot_state.open_qty << ","
+                          << "\"current_price\":" << last_price << ","
+                          << "\"current_R\":" << snapshot_state.open_current_r << ","
+                          << "\"unrealized_pnl\":" << portfolio.total_unrealized_pnl() << ","
+                          << "\"stop\":" << snapshot_state.open_stop << ","
+                          << "\"target1\":" << snapshot_state.open_target1 << ","
+                          << "\"target2\":" << snapshot_state.open_target2 << "}";
+            }
+            std::cout << "],"
                       << "\"trades\":" << snapshot_state.total_trades << ","
+                      << "\"wins\":" << snapshot_state.wins << ","
+                      << "\"losses\":" << snapshot_state.losses << ","
+                      << "\"breakevens\":" << snapshot_state.breakevens << ","
+                      << "\"gross_R\":" << snapshot_state.gross_r << ","
+                      << "\"avg_R\":" << snapshot_state.avg_r << ","
+                      << "\"last_result\":\"" << snapshot_state.last_result << "\","
                       << "\"processed\":" << proc << ","
                       << "\"bars\":" << prism.bars_count() << ","
                       << "\"signals\":" << signals << ","

@@ -33,6 +33,9 @@ SUPPORTED_SYMBOLS = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT"
 LIVE_BINARY_NAME = "prism_live_paper_trading"
 LIVE_BINARY_WINDOWS_NAME = "prism_live_paper_trading.exe"
 LIVE_BUILD_COMMAND = "cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --config Release --target prism_live_paper_trading"
+LIVE_PAPER_R_EPSILON = 0.01
+MAX_LIVE_CANDLES_PER_SYMBOL = 1000
+MAX_LIVE_EVENTS = 100
 
 _metric_re = re.compile(r"([A-Za-z0-9_]+)=([^\s]+)")
 _heartbeat_prefix = "QUANTOS_HEARTBEAT "
@@ -61,24 +64,39 @@ def _fetch_market_prices() -> Dict[str, float]:
 
 def _market_table(session: Optional["LivePaperSession"] = None) -> List[Dict[str, Any]]:
     prices = _fetch_market_prices()
-    active_symbols: set[str] = set()
+    selected_symbols: set[str] = set()
     if session and session.live_config:
-        active_symbols = {str(x).upper() for x in (session.live_config.get("symbols") or [DEFAULT_SYMBOL])}
+        selected_symbols = {str(x).upper() for x in (session.live_config.get("symbols") or [DEFAULT_SYMBOL])}
     rows = []
     for sym in SUPPORTED_SYMBOLS:
         state = (session.symbol_states.get(sym, {}) if session else {})
-        is_active = bool(session and sym in active_symbols and session.status in {"running", "starting"})
+        proc = session.processes.get(sym) if session else None
+        process_running = bool(proc and proc.poll() is None)
+        has_data = bool(_float(state.get("processed")) > 0 or _float(state.get("last_price")) > 0)
+        selected = bool(session and sym in selected_symbols and session.status in {"running", "starting"})
+        if process_running and has_data:
+            paper_status = "ACTIVE_WEBSOCKET"
+            source = "C++ Binance WebSocket"
+        elif process_running or selected:
+            paper_status = "WAITING"
+            source = "Selected live paper process" if process_running else "Selected, not started"
+        elif session and session.status in {"stopped", "disabled", "failed"}:
+            paper_status = "STOPPED"
+            source = "Stopped live paper session"
+        else:
+            paper_status = "SUPPORTED"
+            source = "Supported market"
         rows.append({
             "symbol": sym,
             "covered": True,
-            "paper_status": "ACTIVE_WEBSOCKET" if is_active else "SUPPORTED",
+            "paper_status": paper_status,
             "latest_price": state.get("last_price") or prices.get(sym),
-            "messages": state.get("processed", 0) if is_active else 0,
-            "bars": state.get("bars", 0) if is_active else 0,
-            "signals": state.get("signals", 0) if is_active else 0,
-            "trades": state.get("total_trades", 0) if is_active else 0,
-            "p95_engine_us": state.get("p95_engine_us") if is_active else None,
-            "source": "C++ Binance WebSocket" if is_active else "Supported market",
+            "messages": state.get("processed", 0) if selected or has_data else 0,
+            "bars": state.get("bars", 0) if selected or has_data else 0,
+            "signals": state.get("signals", 0) if selected or has_data else 0,
+            "trades": state.get("total_trades", 0) if selected or has_data else 0,
+            "p95_engine_us": state.get("p95_engine_us") if selected or has_data else None,
+            "source": source,
         })
     return rows
 
@@ -89,6 +107,15 @@ def _float(v: Any, default: float = 0.0) -> float:
         return float(v)
     except Exception:
         return default
+
+
+def classify_trade_result(r_value: Any, epsilon: float = LIVE_PAPER_R_EPSILON) -> str:
+    r = _float(r_value, 0.0)
+    if r > epsilon:
+        return "WIN"
+    if r < -epsilon:
+        return "LOSS"
+    return "BREAKEVEN"
 
 
 def _path_for_display(path: Path) -> str:
@@ -141,9 +168,47 @@ def parse_quantos_heartbeat(line: str) -> Dict[str, Any]:
     allowed = {
         "symbol", "latest_price", "equity", "cash", "unrealized_pnl", "realized_pnl",
         "position_qty", "trades", "p50_latency_us", "p95_latency_us", "p99_latency_us",
-        "mode", "feed_status", "processed", "bars", "signals",
+        "mode", "feed_status", "processed", "messages", "bars", "signals",
+        "open_positions", "closed_trades", "latency", "open_entry", "open_qty",
+        "open_side", "open_stop", "target1", "target2", "current_R", "current_r",
+        "wins", "losses", "breakevens", "gross_R", "avg_R", "last_result",
     }
     return {k: payload.get(k) for k in allowed if k in payload}
+
+
+def _bar_seconds_from_payload(payload: Dict[str, Any]) -> int:
+    try:
+        return max(1, int(payload.get("bar_seconds") or 60))
+    except Exception:
+        return 60
+
+
+def validate_live_start_request(user_id: str, strategy_id: str = "", symbols: Optional[List[str]] = None) -> Dict[str, Any]:
+    row = _strategy_for_user(user_id, strategy_id)
+    payload = _safe_strategy_payload(row)
+    if not payload:
+        payload = {"symbols": [DEFAULT_SYMBOL], "bar_seconds": 10}
+    active_symbols = _clean_symbols(symbols or payload.get("symbols") or [DEFAULT_SYMBOL])
+    bar_seconds = _bar_seconds_from_payload(payload)
+    if bar_seconds <= 1 and len(active_symbols) > 1:
+        return {
+            "ok": False,
+            "status_code": 422,
+            "message": "1s multi-symbol live paper can exhaust Windows memory/pagefile. Start with BTCUSDT only.",
+            "bar_seconds": bar_seconds,
+            "symbols": active_symbols,
+            "max_symbols": 1,
+        }
+    if bar_seconds <= 5 and len(active_symbols) > 3:
+        return {
+            "ok": False,
+            "status_code": 422,
+            "message": "5s or faster live paper is limited to 3 symbols on this local engine to protect Windows memory/pagefile.",
+            "bar_seconds": bar_seconds,
+            "symbols": active_symbols,
+            "max_symbols": 3,
+        }
+    return {"ok": True, "bar_seconds": bar_seconds, "symbols": active_symbols}
 
 
 def _live_session_dir(user_id: str, session_id: str) -> Path:
@@ -475,6 +540,63 @@ def _aggregate_session_metrics(session: "LivePaperSession") -> Dict[str, Any]:
     }
 
 
+def _canonical_feed_status(session: "LivePaperSession", process_running: bool) -> str:
+    if session.status in {"stopped", "disabled", "failed", "idle"} or not process_running:
+        return "stopped" if session.status == "stopped" else (session.feed_status or "stopped")
+    if session.processed > 0 or session.last_price > 0:
+        return "connected"
+    if session.last_heartbeat_at:
+        hb_status = str((session.last_heartbeat or {}).get("feed_status") or session.feed_status or "")
+        return "connected" if hb_status in {"connected", "waiting_for_feed"} else hb_status or "connected"
+    return "waiting_for_heartbeat" if session.status == "running" else "starting"
+
+
+def _append_live_candle(session: "LivePaperSession", symbol: str, price: float) -> None:
+    if price <= 0:
+        return
+    bar_seconds = _bar_seconds_from_payload(session.live_config or {})
+    bucket = int(time.time() // bar_seconds * bar_seconds)
+    candles = session.candles_by_symbol.setdefault(symbol, [])
+    if candles and candles[-1].get("time") == bucket:
+        candle = candles[-1]
+        candle["high"] = max(_float(candle.get("high")), price)
+        candle["low"] = min(_float(candle.get("low")), price)
+        candle["close"] = price
+    else:
+        candles.append({"time": bucket, "open": price, "high": price, "low": price, "close": price})
+    if len(candles) > MAX_LIVE_CANDLES_PER_SYMBOL:
+        del candles[: len(candles) - MAX_LIVE_CANDLES_PER_SYMBOL]
+
+
+def _open_positions_from_heartbeat(symbol: str, heartbeat: Dict[str, Any], state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw_positions = heartbeat.get("open_positions")
+    if isinstance(raw_positions, list):
+        out = []
+        for pos in raw_positions:
+            if not isinstance(pos, dict):
+                continue
+            item = dict(pos)
+            item["symbol"] = str(item.get("symbol") or symbol).upper()
+            out.append(item)
+        if out:
+            return out
+    qty = _float(heartbeat.get("position_qty") or heartbeat.get("open_qty") or state.get("open_qty"))
+    if qty <= 0:
+        return []
+    return [{
+        "symbol": symbol,
+        "side": state.get("open_side") or heartbeat.get("open_side") or "BUY",
+        "entry_price": state.get("open_entry") or heartbeat.get("open_entry"),
+        "qty": qty,
+        "current_price": state.get("last_price") or heartbeat.get("latest_price"),
+        "current_R": state.get("current_R") or heartbeat.get("current_R") or heartbeat.get("current_r"),
+        "unrealized_pnl": state.get("unrealized_pnl") or heartbeat.get("unrealized_pnl"),
+        "stop": state.get("open_stop") or heartbeat.get("open_stop"),
+        "target1": state.get("target1") or heartbeat.get("target1"),
+        "target2": state.get("target2") or heartbeat.get("target2"),
+    }]
+
+
 def _copy_final_reports(user_id: str, session_id: str) -> Dict[str, str]:
     out = _live_session_dir(user_id, session_id)
     dashboard = _read_dashboard_snapshot(user_id, session_id)
@@ -535,6 +657,8 @@ class LivePaperSession:
     last_heartbeat: Dict[str, Any] = field(default_factory=dict)
     last_heartbeat_at: str = ""
     feed_status: str = "idle"
+    candles_by_symbol: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
+    open_positions_detail: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class LivePaperManager:
@@ -566,6 +690,9 @@ class LivePaperManager:
         locked_until = self._is_locked(user_id)
         if locked_until:
             return {"status": "locked", "locked_until": locked_until, "message": "Wallet balance reached zero. Live paper locked for 24 hours."}
+        guard = validate_live_start_request(user_id, strategy_id=strategy_id, symbols=symbols)
+        if not guard.get("ok"):
+            return {"status": "rejected", "feed_status": "stopped", "process_running": False, "error": guard["message"], "guard": guard}
         with self._lock:
             active = self._sessions.get(user_id)
             if active and any(p.poll() is None for p in active.processes.values()):
@@ -578,7 +705,7 @@ class LivePaperManager:
             session.binary_diagnostics = binary_diag
             session.selected_binary_path = str(binary) if binary else ""
             session.feed_status = "starting"
-            live_config = _write_live_strategy_config(user_id, session.session_id, strategy_id, symbols_override=symbols)
+            live_config = _write_live_strategy_config(user_id, session.session_id, strategy_id, symbols_override=guard.get("symbols") or symbols)
             session.live_config = live_config
             session.config_path = live_config.get("config_path", "")
             session.selected_strategy_id = live_config.get("strategy_id", "")
@@ -623,7 +750,7 @@ class LivePaperManager:
                     session.processes[sym] = proc
                     if session.process is None:
                         session.process = proc
-                    session.symbol_states[sym] = {"symbol": sym, "processed": 0, "last_price": 0.0, "bars": 0, "signals": 0, "total_trades": 0, "p95_engine_us": 0}
+                    session.symbol_states[sym] = {"symbol": sym, "processed": 0, "last_price": 0.0, "bars": 0, "signals": 0, "total_trades": 0, "p95_engine_us": 0, "paper_status": "WAITING"}
                     threading.Thread(target=self._reader, args=(session, sym, proc), daemon=True).start()
                 session.status = "running"
                 session.feed_status = "waiting_for_heartbeat"
@@ -650,23 +777,53 @@ class LivePaperManager:
                     symbol_state["last_price"] = _float(heartbeat.get("latest_price"), symbol_state.get("last_price", 0.0))
                     symbol_state["realized_pnl"] = _float(heartbeat.get("realized_pnl"), symbol_state.get("realized_pnl", 0.0))
                     symbol_state["unrealized_pnl"] = _float(heartbeat.get("unrealized_pnl"), symbol_state.get("unrealized_pnl", 0.0))
-                    symbol_state["processed"] = int(_float(heartbeat.get("processed"), symbol_state.get("processed", 0)))
+                    symbol_state["processed"] = int(_float(heartbeat.get("processed") or heartbeat.get("messages"), symbol_state.get("processed", 0)))
                     symbol_state["bars"] = int(_float(heartbeat.get("bars"), symbol_state.get("bars", 0)))
                     symbol_state["signals"] = int(_float(heartbeat.get("signals"), symbol_state.get("signals", 0)))
-                    symbol_state["open_positions"] = int(1 if _float(heartbeat.get("position_qty")) else 0)
+                    symbol_state["open_qty"] = _float(heartbeat.get("open_qty") or heartbeat.get("position_qty"), symbol_state.get("open_qty", 0.0))
+                    symbol_state["open_positions"] = int(1 if symbol_state["open_qty"] else 0)
+                    symbol_state["open_trade"] = symbol_state["open_positions"]
+                    symbol_state["open_side"] = heartbeat.get("open_side", symbol_state.get("open_side", "BUY"))
+                    symbol_state["open_entry"] = _float(heartbeat.get("open_entry"), symbol_state.get("open_entry", 0.0))
+                    symbol_state["open_stop"] = _float(heartbeat.get("open_stop"), symbol_state.get("open_stop", 0.0))
+                    symbol_state["target1"] = _float(heartbeat.get("target1"), symbol_state.get("target1", 0.0))
+                    symbol_state["target2"] = _float(heartbeat.get("target2"), symbol_state.get("target2", 0.0))
+                    symbol_state["current_R"] = _float(heartbeat.get("current_R") or heartbeat.get("current_r"), symbol_state.get("current_R", 0.0))
                     symbol_state["total_trades"] = int(_float(heartbeat.get("trades"), symbol_state.get("total_trades", 0)))
+                    symbol_state["wins"] = int(_float(heartbeat.get("wins"), symbol_state.get("wins", 0)))
+                    symbol_state["losses"] = int(_float(heartbeat.get("losses"), symbol_state.get("losses", 0)))
+                    symbol_state["breakevens"] = int(_float(heartbeat.get("breakevens"), symbol_state.get("breakevens", 0)))
+                    symbol_state["gross_R"] = _float(heartbeat.get("gross_R"), symbol_state.get("gross_R", 0.0))
+                    symbol_state["avg_R"] = _float(heartbeat.get("avg_R"), symbol_state.get("avg_R", 0.0))
+                    symbol_state["last_result"] = heartbeat.get("last_result", symbol_state.get("last_result", "NONE"))
                     symbol_state["p50_engine_us"] = _float(heartbeat.get("p50_latency_us"), symbol_state.get("p50_engine_us", 0.0))
                     symbol_state["p95_engine_us"] = _float(heartbeat.get("p95_latency_us"), symbol_state.get("p95_engine_us", 0.0))
                     symbol_state["p99_engine_us"] = _float(heartbeat.get("p99_latency_us"), symbol_state.get("p99_engine_us", 0.0))
+                    if symbol_state["last_price"] > 0:
+                        _append_live_candle(session, hb_symbol, symbol_state["last_price"])
+                    positions = _open_positions_from_heartbeat(hb_symbol, heartbeat, symbol_state)
+                    existing = [p for p in session.open_positions_detail if str(p.get("symbol", "")).upper() != hb_symbol]
+                    session.open_positions_detail = existing + positions
+                    closed_trades = heartbeat.get("closed_trades")
+                    if isinstance(closed_trades, list):
+                        for trade in closed_trades[-20:]:
+                            if isinstance(trade, dict):
+                                ev = dict(trade)
+                                ev.setdefault("event_type", "PAPER_SELL_FILL")
+                                ev["symbol"] = str(ev.get("symbol") or hb_symbol).upper()
+                                ev["result"] = classify_trade_result(ev.get("R_multiple") or ev.get("r"))
+                                ev.setdefault("ts", now())
+                                session.events.append(ev)
+                        session.events = session.events[-MAX_LIVE_EVENTS:]
                     session.last_heartbeat = heartbeat
                     session.last_heartbeat_at = now()
-                    session.feed_status = str(heartbeat.get("feed_status") or "connected")
                     session.metrics = _aggregate_session_metrics(session)
                     session.session_metrics = session.metrics
                     session.last_price = max((_float(st.get("last_price")) for st in session.symbol_states.values()), default=session.last_price)
                     session.realized_pnl = sum(_float(st.get("realized_pnl")) for st in session.symbol_states.values())
                     session.unrealized_pnl = sum(_float(st.get("unrealized_pnl")) for st in session.symbol_states.values())
                     session.processed = int(session.metrics.get("processed", 0))
+                    session.feed_status = _canonical_feed_status(session, any(p.poll() is None for p in session.processes.values()))
                     _update_wallet(session.user_id, session.session_id, session.realized_pnl, session.unrealized_pnl)
                 continue
             if metrics:
@@ -680,6 +837,13 @@ class LivePaperManager:
                     symbol_state["signals"] = int(_float(metrics.get("signals"), symbol_state.get("signals", 0)))
                     symbol_state["open_positions"] = int(_float(metrics.get("open_positions"), symbol_state.get("open_positions", 0)))
                     symbol_state["open_trade"] = int(_float(metrics.get("open_trade"), symbol_state.get("open_trade", 0)))
+                    symbol_state["open_side"] = metrics.get("open_side", symbol_state.get("open_side", "BUY"))
+                    symbol_state["open_entry"] = _float(metrics.get("open_entry"), symbol_state.get("open_entry", 0.0))
+                    symbol_state["open_qty"] = _float(metrics.get("open_qty"), symbol_state.get("open_qty", 0.0))
+                    symbol_state["open_stop"] = _float(metrics.get("open_stop"), symbol_state.get("open_stop", 0.0))
+                    symbol_state["target1"] = _float(metrics.get("target1"), symbol_state.get("target1", 0.0))
+                    symbol_state["target2"] = _float(metrics.get("target2"), symbol_state.get("target2", 0.0))
+                    symbol_state["current_R"] = _float(metrics.get("current_R"), symbol_state.get("current_R", 0.0))
                     symbol_state["total_trades"] = int(_float(metrics.get("total_trades"), symbol_state.get("total_trades", 0)))
                     symbol_state["wins"] = int(_float(metrics.get("wins"), symbol_state.get("wins", 0)))
                     symbol_state["losses"] = int(_float(metrics.get("losses"), symbol_state.get("losses", 0)))
@@ -690,12 +854,18 @@ class LivePaperManager:
                     symbol_state["current_setup_score"] = _float(metrics.get("current_setup_score"), symbol_state.get("current_setup_score", 0.0))
                     symbol_state["p95_engine_us"] = _float(metrics.get("p95_engine_us"), symbol_state.get("p95_engine_us", 0.0))
                     symbol_state["p99_engine_us"] = _float(metrics.get("p99_engine_us"), symbol_state.get("p99_engine_us", 0.0))
+                    if symbol_state["last_price"] > 0:
+                        _append_live_candle(session, symbol, symbol_state["last_price"])
+                    positions = _open_positions_from_heartbeat(symbol, {}, symbol_state)
+                    existing = [p for p in session.open_positions_detail if str(p.get("symbol", "")).upper() != symbol]
+                    session.open_positions_detail = existing + positions
                     session.metrics = _aggregate_session_metrics(session)
                     session.session_metrics = session.metrics
                     session.last_price = max((_float(st.get("last_price")) for st in session.symbol_states.values()), default=session.last_price)
                     session.realized_pnl = sum(_float(st.get("realized_pnl")) for st in session.symbol_states.values())
                     session.unrealized_pnl = sum(_float(st.get("unrealized_pnl")) for st in session.symbol_states.values())
                     session.processed = int(session.metrics.get("processed", 0))
+                    session.feed_status = _canonical_feed_status(session, any(p.poll() is None for p in session.processes.values()))
                     _update_wallet(session.user_id, session.session_id, session.realized_pnl, session.unrealized_pnl)
                     self._capture_event_from_line(session, line)
             else:
@@ -704,7 +874,7 @@ class LivePaperManager:
         with self._lock:
             if all(p.poll() is not None for p in session.processes.values()) and session.status == "running":
                 session.status = "stopped"
-                session.feed_status = "disconnected"
+                session.feed_status = "stopped"
                 session.stopped_at = now()
                 session.report_files = _copy_final_reports(session.user_id, session.session_id)
 
@@ -713,19 +883,30 @@ class LivePaperManager:
             return
         metrics = dict(_metric_re.findall(line))
         ev_type = "PRISM_SIGNAL" if line.startswith("PRISM_OUTPUT") else line.split()[0]
+        r_value = _float(metrics.get("R_multiple") or metrics.get("last_R"))
+        result = classify_trade_result(r_value) if ev_type == "PAPER_SELL_FILL" else metrics.get("result", "")
         event = {
             "event_type": ev_type,
             "symbol": metrics.get("symbol", DEFAULT_SYMBOL).upper(),
             "price": _float(metrics.get("fill") or metrics.get("entry") or metrics.get("exit")),
+            "fill": _float(metrics.get("fill")),
+            "entry": _float(metrics.get("entry")),
+            "exit": _float(metrics.get("exit")),
             "qty": _float(metrics.get("qty")),
             "pnl": _float(metrics.get("pnl")),
-            "r": _float(metrics.get("R_multiple") or metrics.get("last_R")),
-            "result": metrics.get("result", ""),
+            "r": r_value,
+            "R_multiple": r_value,
+            "result": result,
+            "exit_reason": metrics.get("exit_reason", ""),
+            "stop": _float(metrics.get("stop")),
+            "target1": _float(metrics.get("target1")),
+            "target2": _float(metrics.get("target2")),
             "line": line,
             "ts": now(),
+            "created_at": now(),
         }
         session.events.append(event)
-        session.events = session.events[-200:]
+        session.events = session.events[-MAX_LIVE_EVENTS:]
         _save_trade_event(session.user_id, session.session_id, event)
 
     def stop(self, user_id: str) -> Dict[str, Any]:
@@ -744,7 +925,7 @@ class LivePaperManager:
                 if proc.poll() is None:
                     proc.kill()
             session.status = "stopped"
-            session.feed_status = "disconnected"
+            session.feed_status = "stopped"
             session.stopped_at = now()
             session.report_files = _copy_final_reports(session.user_id, session.session_id)
             return self.status(user_id)
@@ -768,11 +949,17 @@ class LivePaperManager:
             metrics = session.metrics or _aggregate_session_metrics(session)
             process_running = any(p.poll() is None for p in session.processes.values())
             diag = session.binary_diagnostics or self._binary_diagnostics()
+            feed_status = _canonical_feed_status(session, process_running)
+            session.feed_status = feed_status
+            selected_symbols = _clean_symbols((session.live_config or {}).get("symbols") or [DEFAULT_SYMBOL])
+            active_symbols = [sym for sym, proc in session.processes.items() if proc.poll() is None]
+            primary_symbol = active_symbols[0] if active_symbols else (selected_symbols[0] if selected_symbols else DEFAULT_SYMBOL)
             return {
                 "status": session.status,
                 "engine_ready": bool(diag.get("binary_found")),
                 "process_running": process_running,
-                "feed_status": session.feed_status or ("waiting_for_heartbeat" if process_running else "disconnected"),
+                "feed_status": feed_status,
+                "heartbeat_status": "received" if session.last_heartbeat_at else ("waiting" if process_running else "stopped"),
                 "binary_diagnostics": diag,
                 "selected_binary_path": session.selected_binary_path or diag.get("selected_binary_path"),
                 "last_heartbeat": session.last_heartbeat or None,
@@ -783,12 +970,19 @@ class LivePaperManager:
                 "stopped_at": session.stopped_at,
                 "last_price": session.last_price,
                 "processed": session.processed,
+                "ticks_processed": session.processed,
                 "realized_pnl": session.realized_pnl,
                 "unrealized_pnl": session.unrealized_pnl,
                 "metrics": metrics,
                 "session_metrics": metrics,
                 "symbol_states": session.symbol_states,
-                "events": session.events[-50:],
+                "events": session.events[-MAX_LIVE_EVENTS:],
+                "selected_symbols": selected_symbols,
+                "active_symbols": active_symbols,
+                "open_positions": session.open_positions_detail,
+                "open_positions_detail": session.open_positions_detail,
+                "candles": session.candles_by_symbol,
+                "recent_candles": session.candles_by_symbol.get(primary_symbol, [])[-MAX_LIVE_CANDLES_PER_SYMBOL:],
                 "stdout_tail": session.stdout_tail[-50:],
                 "report_files": session.report_files,
                 "wallet": wallet,

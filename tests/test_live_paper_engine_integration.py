@@ -1,4 +1,5 @@
 import os
+import json
 import sys
 import time
 from pathlib import Path
@@ -9,7 +10,14 @@ os.environ.setdefault("PRISMFLOW_SECRET_KEY", "unit-test-secret-key-with-enough-
 
 from app.db import init_db
 from app.services import live_paper
-from app.services.live_paper import LivePaperManager, parse_quantos_heartbeat, resolve_live_paper_binary
+from app.services.live_paper import (
+    LivePaperManager,
+    LivePaperSession,
+    classify_trade_result,
+    parse_quantos_heartbeat,
+    resolve_live_paper_binary,
+    validate_live_start_request,
+)
 
 
 def setup_module(module):
@@ -85,6 +93,91 @@ def test_parse_quantos_heartbeat_safe_json_line():
     assert out["latest_price"] == 123.45
     assert out["mode"] == "paper"
     assert "api_key" not in out
+
+
+def test_live_symbol_guard_blocks_unsafe_1s_multi_symbol(monkeypatch):
+    row = {
+        "id": "s1",
+        "name": "Fast",
+        "timeframe": "1s",
+        "symbols_json": json.dumps(["BTCUSDT", "ETHUSDT"]),
+        "config_json": json.dumps({"bar_seconds": 1, "symbols": ["BTCUSDT", "ETHUSDT"]}),
+    }
+    monkeypatch.setattr(live_paper, "_strategy_for_user", lambda user_id, strategy_id="": row)
+
+    rejected = validate_live_start_request("guard-user", symbols=["BTCUSDT", "ETHUSDT"])
+    accepted = validate_live_start_request("guard-user", symbols=["BTCUSDT"])
+
+    assert rejected["ok"] is False
+    assert rejected["status_code"] == 422
+    assert "Windows memory/pagefile" in rejected["message"]
+    assert accepted["ok"] is True
+
+
+def test_trade_classification_uses_small_breakeven_epsilon():
+    assert classify_trade_result(-1.314) == "LOSS"
+    assert classify_trade_result(-0.355) == "LOSS"
+    assert classify_trade_result(0.005) == "BREAKEVEN"
+    assert classify_trade_result(0.02) == "WIN"
+
+
+class _LinesProcess:
+    def __init__(self, lines):
+        self.stdout = iter(lines)
+
+    def poll(self):
+        return None
+
+
+def test_heartbeat_updates_connected_status_open_position_and_candles(monkeypatch):
+    manager = LivePaperManager()
+    session = LivePaperSession(user_id="parser-user", session_id="1", status="running")
+    session.live_config = {"symbols": ["BTCUSDT"], "bar_seconds": 1}
+    proc = _LinesProcess([
+        'QUANTOS_HEARTBEAT {"symbol":"BTCUSDT","latest_price":101.5,"processed":3,'
+        '"bars":2,"signals":1,"trades":0,"equity":100001,"cash":100000,'
+        '"realized_pnl":0,"unrealized_pnl":1.25,"position_qty":0.5,'
+        '"open_qty":0.5,"open_entry":100,"open_stop":99,"target1":102,'
+        '"target2":104,"current_R":0.75,"p95_latency_us":7,"feed_status":"starting"}'
+    ])
+    session.processes["BTCUSDT"] = proc
+    manager._sessions["parser-user"] = session
+    monkeypatch.setattr(live_paper, "_update_wallet", lambda *args, **kwargs: {})
+
+    manager._reader(session, "BTCUSDT", proc)
+    status = manager.status("parser-user")
+
+    assert status["feed_status"] == "connected"
+    assert status["ticks_processed"] == 3
+    assert status["markets"][0]["messages"] == 3
+    assert status["open_positions_detail"][0]["entry_price"] == 100
+    assert status["open_positions_detail"][0]["qty"] == 0.5
+    assert status["recent_candles"][-1]["close"] == 101.5
+
+
+def test_live_candle_and_trade_history_are_bounded(monkeypatch):
+    manager = LivePaperManager()
+    session = LivePaperSession(user_id="bounded-user", session_id="1", status="running")
+    session.live_config = {"symbols": ["BTCUSDT"], "bar_seconds": 1}
+    lines = [
+        f'QUANTOS_HEARTBEAT {{"symbol":"BTCUSDT","latest_price":{100 + i},'
+        f'"processed":{i + 1},"closed_trades":[{{"symbol":"BTCUSDT","r":-1.314}}]}}'
+        for i in range(1005)
+    ]
+    proc = _LinesProcess(lines)
+    session.processes["BTCUSDT"] = proc
+    manager._sessions["bounded-user"] = session
+    monkeypatch.setattr(live_paper, "_update_wallet", lambda *args, **kwargs: {})
+    monkeypatch.setattr(live_paper.time, "time", lambda: test_live_candle_and_trade_history_are_bounded.tick)
+
+    for i, line in enumerate(lines):
+        test_live_candle_and_trade_history_are_bounded.tick = 1_700_000_000 + i
+        proc.stdout = iter([line])
+        manager._reader(session, "BTCUSDT", proc)
+
+    assert len(session.candles_by_symbol["BTCUSDT"]) == 1000
+    assert len(session.events) == 100
+    assert session.events[-1]["result"] == "LOSS"
 
 
 class _BlockingStdout:
