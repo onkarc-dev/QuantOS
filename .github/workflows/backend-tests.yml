@@ -24,7 +24,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install API dependencies
         run: |
@@ -33,4 +33,6 @@ jobs:
           pip install psycopg2-binary rq redis httpx
 
       - name: Run backend unit tests
-        run: PYTHONPATH=. python -m unittest discover -s tests -p "test_*.py"
+        run: |
+          PYTHONPATH=. python -c "from app.db import init_db; init_db()"
+          PYTHONPATH=. python -m unittest discover -s tests -p "test_*.py"
