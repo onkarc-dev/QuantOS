@@ -6,9 +6,14 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'apps' / 'api'))
 os.environ.setdefault('PRISMFLOW_SECRET_KEY', 'unit-test-secret-key-with-enough-length')
 
+from app.db import init_db
 from app.services.engine_bridge import create_engine_token, record_heartbeat, status_for_user
 from app.services.ai_explainer import explain_backtest
 from app.services.live_paper import replay_csv_paper_session
+
+
+def setup_module(module):
+    init_db()
 
 
 def test_engine_bridge_records_safe_heartbeat(tmp_path, monkeypatch):
