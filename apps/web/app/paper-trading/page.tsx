@@ -3,6 +3,12 @@
 import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 import { api, formatApiError } from "../../lib/api";
+import {
+  appendTelemetryCandle,
+  candlesForSymbol,
+  normalizeLiveCandles,
+  type LiveChartCandle,
+} from "../../lib/liveChartCandles";
 import TradingChart from "../../components/TradingChart";
 
 type StrategyRow = {
@@ -29,6 +35,7 @@ type LiveStatus = {
   synthetic_data_used?: boolean;
   last_price?: number;
   processed?: number;
+  ticks_processed?: number;
   realized_pnl?: number;
   unrealized_pnl?: number;
   open_position?: unknown;
@@ -44,6 +51,7 @@ type LiveStatus = {
   report_files?: Record<string, string>;
   metrics?: Record<string, any>;
   session_metrics?: Record<string, any>;
+  symbol_states?: Record<string, any>;
   markets?: any[];
   market_table?: any[];
   supported_symbols?: string[];
@@ -111,6 +119,13 @@ function cleanTime(v: any) {
   if (Number.isNaN(d.getTime()))
     return raw.replace("T", " ").replace("Z", " UTC");
   return d.toLocaleString(undefined, { hour12: false });
+}
+function chartUpdateTime(v: any) {
+  if (v === undefined || v === null || v === "") return "not available";
+  if (typeof v === "number" && Number.isFinite(v)) {
+    return new Date(v > 1_000_000_000_000 ? v : v * 1000).toLocaleTimeString(undefined, { hour12: false });
+  }
+  return cleanTime(v);
 }
 function normalizeReason(v: any) {
   return String(v || "")
@@ -349,6 +364,27 @@ function buildOpenPositions(status: LiveStatus, tradeRows: any[]) {
     }));
 }
 
+function symbolStateFor(status: LiveStatus, symbol: string) {
+  const wanted = String(symbol || "").toUpperCase();
+  const states = status.symbol_states || {};
+  const key = Object.keys(states).find((candidate) => candidate.toUpperCase() === wanted);
+  return key ? states[key] : {};
+}
+
+function priceForSymbol(status: LiveStatus, symbol: string, marketRows: any[], heartbeat: Record<string, any> | null | undefined) {
+  const wanted = String(symbol || "").toUpperCase();
+  const state = symbolStateFor(status, wanted);
+  const market = marketRows.find((m: any) => String(m?.symbol || "").toUpperCase() === wanted);
+  const heartbeatSymbol = String(heartbeat?.symbol || "").toUpperCase();
+  return (
+    state.last_price ??
+    state.latest_price ??
+    market?.latest_price ??
+    (heartbeatSymbol === wanted ? heartbeat?.latest_price : undefined) ??
+    status.last_price
+  );
+}
+
 function Countdown({ until }: { until?: string }) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -374,6 +410,7 @@ export default function PaperTradingPage() {
   const [selectedStrategyId, setSelectedStrategyId] = useState("");
   const [selectedSymbols, setSelectedSymbols] = useState<string[]>(["BTCUSDT"]);
   const [chartSymbol, setChartSymbol] = useState("BTCUSDT");
+  const [telemetryCandles, setTelemetryCandles] = useState<Record<string, LiveChartCandle[]>>({});
   const [message, setMessage] = useState(
     "Real-time Binance BTCUSDT live paper mode. No real-money execution.",
   );
@@ -600,13 +637,27 @@ export default function PaperTradingPage() {
     primarySymbol,
   ].filter(Boolean).map((x: any) => String(x).toUpperCase())));
   const selectedChartSymbol = chartSymbols.includes(chartSymbol) ? chartSymbol : String(primarySymbol || "BTCUSDT").toUpperCase();
-  const chartCandles = (
-    status.candles?.[selectedChartSymbol] ||
-    (selectedChartSymbol === primarySymbol ? status.recent_candles : []) ||
-    []
-  ).filter((c: any) => Number(c?.open) > 0 && Number(c?.high) > 0 && Number(c?.low) > 0 && Number(c?.close) > 0);
   const heartbeat = status.last_heartbeat || {};
+  const selectedChartState = symbolStateFor(status, selectedChartSymbol);
+  const selectedChartPrice = priceForSymbol(status, selectedChartSymbol, marketRows, heartbeat);
+  const backendChartCandles = [
+    ...candlesForSymbol(status.candles, selectedChartSymbol),
+    ...(selectedChartSymbol === String(primarySymbol || "").toUpperCase()
+      ? normalizeLiveCandles(status.recent_candles)
+      : []),
+  ];
+  const uniqueBackendChartCandles = Array.from(
+    new Map(backendChartCandles.map((candle) => [String(candle.time), candle])).values(),
+  ).slice(-1000);
+  const chartCandles = uniqueBackendChartCandles.length
+    ? uniqueBackendChartCandles
+    : telemetryCandles[selectedChartSymbol] || [];
   const primaryPrice = heartbeat.latest_price ?? primaryMarket?.latest_price ?? status.last_price;
+  const chartLastUpdate =
+    status.last_heartbeat_at ||
+    selectedChartState.last_update ||
+    selectedChartState.updated_at ||
+    (chartCandles.length ? chartCandles[chartCandles.length - 1]?.time : "");
   const openTrade = Number(metrics.open_trade || metrics.open_positions || 0);
   const totalTrades = Number(metrics.total_trades || 0);
   const wins = Number(metrics.wins || 0);
@@ -637,6 +688,31 @@ export default function PaperTradingPage() {
     metrics.open_setup_score ??
     metrics.last_setup_score ??
     0;
+
+  useEffect(() => {
+    if (uniqueBackendChartCandles.length) return;
+    const price = Number(selectedChartPrice);
+    if (!Number.isFinite(price) || price <= 0) return;
+    setTelemetryCandles((prev) => ({
+      ...prev,
+      [selectedChartSymbol]: appendTelemetryCandle(
+        prev[selectedChartSymbol] || [],
+        price,
+        status.last_heartbeat_at || Date.now(),
+        activeBarSecondsNum || 1,
+        1000,
+      ),
+    }));
+  }, [
+    activeBarSecondsNum,
+    metrics.processed,
+    selectedChartPrice,
+    selectedChartSymbol,
+    status.last_heartbeat_at,
+    status.processed,
+    status.ticks_processed,
+    uniqueBackendChartCandles.length,
+  ]);
 
   return (
     <main style={{ padding: 24, maxWidth: 1280, margin: "0 auto" }}>
@@ -679,6 +755,11 @@ export default function PaperTradingPage() {
             Waiting for live ticks...
           </div>
         )}
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap", color: "#94a3b8", fontSize: 12, marginTop: 10 }}>
+          <span>Chart candles: {chartCandles.length}</span>
+          <span>Last price: {Number(selectedChartPrice) > 0 ? `$${money(selectedChartPrice)}` : "not available"}</span>
+          <span>Last update: {chartUpdateTime(chartLastUpdate)}</span>
+        </div>
         <p style={{ color: '#fbbf24', marginBottom: 0 }}>Paper trading only. No real broker orders. No financial advice.</p>
       </section>
 
