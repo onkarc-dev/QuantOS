@@ -1,28 +1,31 @@
 # Local Engine Setup
 
-QuantOS cloud is intentionally lightweight. Market data WebSockets, paper execution simulation, premium/broker credentials, and heavy low-latency work stay on the user's machine.
+QuantOS keeps market data adapters, paper execution simulation, premium/broker credentials, and heavy low-latency work on the user's machine.
 
 ## Build
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release -j2
+ctest --test-dir build -C Release --output-on-failure
 ```
 
-Useful targets:
+Current local result: C++ configure/build passed and `ctest` passed 6/6.
+
+## Useful targets
 
 - `quantos-engine`: local bridge/heartbeat CLI.
-- `prism_backtest`: C++ CSV/backtest smoke path.
+- `prism_backtest`: C++ CSV/backtest path.
 - `benchmark_engine`: internal engine latency benchmark.
-- `prism_cpp_heavy_paper`: local paper engine target available without WebSocket deps.
-- `prism_live_paper_trading`: optional, enabled only when `libwebsockets` is installed.
+- `prism_cpp_heavy_paper`: local paper engine target.
+- `prism_live_paper_trading`: optional live-paper target when WebSocket dependencies are available.
 
 ## Connect
 
 1. Sign in to the web app.
 2. Open **Engine Connection**.
-3. Click **Connect Local Engine** or **Connect BTC Live Feed**.
-4. Run the displayed local command:
+3. Click the local engine connect action.
+4. Run the displayed command:
 
 ```bash
 quantos-engine --token <TOKEN> --mode paper --exchange binance --symbol BTCUSDT
@@ -34,14 +37,10 @@ The UI shows connected/disconnected state, exchange/source, mode, last heartbeat
 
 The local engine may sync only safe events/results: heartbeat, candles, orders, trades, positions, P&L, risk status, and logs. API keys, broker secrets, and premium data-feed credentials must never be sent to QuantOS cloud.
 
-## Local WebSocket capture/backtest
+## Binance adapter foundation
 
-When `libwebsockets` is available, the local engine can capture candles/ticks from Binance or custom feeds. Users save/download captured data locally, then run it through `prism_backtest` or CSV upload. The backend must not continuously stream exchange market data.
+`BinanceWebSocketAdapter` includes the Binance public trade WebSocket URL and parser/local ingestion foundation for public `@trade` messages. Full adapter-owned network socket streaming remains partial and should not be described as complete.
 
-## Data adapters
+## Real-money trading
 
-- `BinanceWebSocketAdapter`: local Binance BTCUSDT/crypto WebSocket source.
-- `CsvFileAdapter`: local OHLCV replay/backtest source.
-- `CustomWebSocketAdapter`: user-owned premium/broker/custom feed source.
-
-All adapters normalize to candle, tick, orderbook update, trade, heartbeat, or error events.
+Real-money trading is disabled. QuantOS local engine workflows are paper/backtest only.

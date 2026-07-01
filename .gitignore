@@ -44,9 +44,6 @@ outputs/
 node_modules/
 apps/web/node_modules/
 apps/web/.next/
-<<<<<<< HEAD
-.env
-=======
 
 # QuantOS runtime/local state
 *.db
@@ -80,4 +77,3 @@ _deps/
 # Local market-data captures; keep curated samples under data/ committed intentionally
 captures/
 local_engine_data/
->>>>>>> b6901a4 (Pin backend runtime to Python 3.12)

@@ -30,6 +30,7 @@ from app.core.config import settings
 PBKDF2_PREFIX = "pbkdf2_sha256"
 PBKDF2_ITERATIONS = 260_000
 SCHEMA_VERSION = "0001_init"
+_LAST_SQLITE_INIT_PATH: str | None = None
 
 
 def now() -> str:
@@ -89,7 +90,17 @@ def get_conn():
     """Return an appropriate database connection based on settings."""
     if settings.is_postgres():
         return _get_pg_conn()
+    _ensure_sqlite_initialized()
     return _get_sqlite_conn()
+
+
+def _ensure_sqlite_initialized() -> None:
+    global _LAST_SQLITE_INIT_PATH
+    db_path = settings.db_file
+    db_key = str(db_path.resolve()) if db_path.exists() else str(db_path)
+    if _LAST_SQLITE_INIT_PATH != db_key or not db_path.exists():
+        _init_sqlite()
+        _LAST_SQLITE_INIT_PATH = db_key
 
 
 def _get_sqlite_conn():
@@ -278,6 +289,7 @@ def init_db():
 
 
 def _init_sqlite():
+    global _LAST_SQLITE_INIT_PATH
     settings.api_root.mkdir(parents=True, exist_ok=True)
     with _get_sqlite_conn() as conn:
         conn.executescript(_SQLITE_DDL)
@@ -287,6 +299,7 @@ def _init_sqlite():
         )
         _seed_demo_user_sqlite(conn)
         conn.commit()
+    _LAST_SQLITE_INIT_PATH = str(settings.db_file.resolve()) if settings.db_file.exists() else str(settings.db_file)
 
 
 def _seed_demo_user_sqlite(conn):

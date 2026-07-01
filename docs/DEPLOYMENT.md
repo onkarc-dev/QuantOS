@@ -2,17 +2,61 @@
 
 ## Local prerequisites
 
-- Backend runtime: Python 3.12 recommended; Python 3.11 is acceptable. Python 3.14 is not supported with the current pinned `pydantic-core`/PyO3 stack.
+- Backend runtime: Python 3.12.
 - Node.js/npm for `apps/web`.
-- Python with packages from `apps/api/requirements.txt`.
+- Python packages from `apps/api/requirements.txt`.
 - CMake + C++17 compiler for `cpp_engine`.
-- Optional: Docker CLI for compose, `libwebsockets` for real Binance WebSocket local engine targets, Postgres/Redis for production-like backend.
+- Optional: Docker CLI for compose, WebSocket dependencies for live local paper targets, Postgres/Redis for production-like backend.
 
-## One-command local bootstrap
+## Local validation
 
 ```bash
-python3.12 -m venv apps/api/.venv && . apps/api/.venv/bin/activate && python -m pip install --upgrade pip setuptools wheel && pip install -r apps/api/requirements.txt && (cd apps/web && npm ci) && (cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --config Release -j2)
+cd apps/web
+npm ci
+npm test
+npm run build
+
+cd C:\Users\Admin\QuantOS\apps\api
+py -3.12 -m venv .venv
+.\.venv\Scripts\activate
+python -m pip install --upgrade pip setuptools wheel
+pip install -r requirements.txt
+$env:PYTHONPATH="."
+python -m pytest ..\..\tests tests
+
+cd C:\Users\Admin\QuantOS
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release -j2
+ctest --test-dir build -C Release --output-on-failure
+python scripts\smoke_quantos.py
 ```
+
+Current local result: frontend passed, backend passed 85 tests, C++ passed, `ctest` passed 6/6, and `smoke_quantos.py` passed.
+
+## Local run
+
+Backend:
+
+```bash
+cd C:\Users\Admin\QuantOS\apps\api
+.\.venv\Scripts\activate
+$env:PYTHONPATH="."
+uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+Frontend:
+
+```bash
+cd C:\Users\Admin\QuantOS\apps\web
+npm run dev
+```
+
+Open:
+
+- `http://127.0.0.1:3000`
+- `http://127.0.0.1:8000/health`
+- `http://127.0.0.1:8000/docs`
+- `http://127.0.0.1:3000/beta-status`
 
 ## Backend on Render
 
@@ -33,27 +77,12 @@ python3.12 -m venv apps/api/.venv && . apps/api/.venv/bin/activate && python -m 
 
 ## Database
 
-Use Postgres for closed beta. SQLite is local-only. The API initializes schema at startup; production should add migration discipline before broader rollout.
+Use Postgres for closed beta. SQLite is local-only. `init_db()` remains idempotent and records schema version `0001_init` in `schema_migrations`.
 
 ## Local engine
 
-See `docs/LOCAL_ENGINE_SETUP.md`. The engine is user-local; exchange/API/premium-feed credentials remain on the user machine. QuantOS cloud only receives safe telemetry/results.
+See `docs/LOCAL_ENGINE_SETUP.md`. The engine is user-local; exchange/API/premium-feed credentials remain on the user's machine. QuantOS cloud only receives safe telemetry/results.
 
-## Validation commands
+## Trading safety
 
-```bash
-cd apps/web && npm ci && npm test && npm run build
-cd apps/api && python3.12 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt && python -m compileall app && python -m pytest ../../tests tests
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --config Release -j2
-ctest --test-dir build --output-on-failure
-```
-
-## Troubleshooting
-
-- `/health` verifies backend liveness.
-- `/version` verifies deployed API version.
-- If auth fails in production, verify `PRISMFLOW_SECRET_KEY` is stable and at least 32 chars.
-- If CORS fails, set exact Vercel domain in `CORS_ORIGINS`.
-- If live WebSocket targets are skipped, install `libwebsockets` locally and rerun CMake.
-- If package install fails with HTTP 403, fix registry/proxy allowlists before running full API integration tests or installing chart dependencies.
+Real-money trading is disabled. Deployment must preserve paper/backtest-only behavior.
