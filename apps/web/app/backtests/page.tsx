@@ -1,7 +1,8 @@
 'use client';
 
 import {useEffect,useState} from 'react';
-import {api} from '../../lib/api';
+import {api, API_BASE, getToken} from '../../lib/api';
+import TradingChart from '../../components/TradingChart';
 
 const th:any={textAlign:'left', padding:'10px 8px', borderBottom:'1px solid #334155', color:'#94a3b8'};
 const td:any={padding:'9px 8px', borderBottom:'1px solid #1e293b'};
@@ -16,6 +17,21 @@ export default function Backtests(){
   const [trades,setTrades]=useState<any[]>([]);
   
   const [msg,setMsg]=useState('');
+  const [uploadResult,setUploadResult]=useState<any>(null);
+
+
+  async function uploadCsv(ev:any){
+    const file=ev.target.files?.[0];
+    if(!file)return;
+    try{
+      setMsg('Uploading CSV and running smoke backtest...');
+      const form=new FormData(); form.append('file',file);
+      const res=await fetch(`${API_BASE}/backtests/upload-csv`,{method:'POST',headers:{Authorization:`Bearer ${getToken()}`},body:form});
+      const data=await res.json();
+      if(!res.ok) throw new Error(typeof data.detail==='string'?data.detail:JSON.stringify(data.detail||data));
+      setUploadResult(data); setMsg('CSV upload backtest complete.');
+    }catch(e:any){setMsg('CSV upload failed: '+e.message)}
+  }
 
   async function refresh(){
     try{ setMsg('Loading jobs...'); const r: any = await api('/jobs/'); setJobs(Array.isArray(r)?r:(r.jobs||[])); setMsg(''); }
@@ -33,6 +49,7 @@ export default function Backtests(){
   return <>
     <div className="hero"><h1>Backtest Results</h1></div>
     {msg && <div className="card">{msg}</div>}
+    <div className="card"><h2>CSV Upload Backtest</h2><p>Required columns: timestamp, open, high, low, close, volume. Results are stored by the backend and can be exported from the returned JSON path.</p><input type="file" accept=".csv,text/csv" onChange={uploadCsv}/>{uploadResult&&<> <div className="grid" style={{marginTop:16}}><div><b>Rows</b><div className="metric">{uploadResult.rows}</div></div><div><b>Win Rate</b><div className="metric">{Number((uploadResult.win_rate||0)*100).toFixed(2)}%</div></div><div><b>Profit Factor</b><div className="metric">{fmt(uploadResult.profit_factor)}</div></div><div><b>Export</b><div style={{fontSize:12,overflowWrap:'anywhere'}}>{uploadResult.result_export_path}</div></div></div><div style={{marginTop:16}}><TradingChart candles={[{time:uploadResult.first_timestamp,open:uploadResult.start_close,high:Math.max(uploadResult.start_close,uploadResult.end_close),low:Math.min(uploadResult.start_close,uploadResult.end_close),close:uploadResult.end_close}]} markers={[{time:uploadResult.first_timestamp,position:'belowBar',text:'CSV'}]} /></div></>}</div>
     <div className="card"><h2>Jobs</h2><button onClick={refresh}>Refresh Jobs</button><br/><br/><div style={{overflowX:'auto'}}><table style={{width:'100%',borderCollapse:'collapse'}}><thead><tr><th style={th}>Strategy ID</th><th style={th}>Symbol</th><th style={th}>Status</th><th style={th}>Mode</th><th style={th}>Timeframe</th><th style={th}>Created</th><th style={th}>Action</th></tr></thead><tbody>{jobs.map(j=><tr key={j.id}><td style={td}>{displayStrategy(j)}</td><td style={td}>{syms(j)}</td><td style={td}>{j.status}</td><td style={td}>{j.mode}</td><td style={td}>{j.timeframe}</td><td style={td}>{j.created_at}</td><td style={td}><button onClick={()=>load(j)} disabled={j.status!=='completed'}>Open Report</button></td></tr>)}</tbody></table></div></div>
     {selected && <div className="card"><h2>Selected Job</h2><div className="grid"><div><b>Strategy ID</b><div className="metric">{displayStrategy(selected)}</div></div><div><b>Symbol</b><div className="metric">{syms(selected)}</div></div><div><b>Status</b><div className="metric">{selected.status}</div></div><div><b>Timeframe</b><div className="metric">{selected.timeframe}</div></div></div>{selected.error_message&&<p style={{color:'#f87171'}}>{selected.error_message}</p>}</div>}
     {summary && <div className="card"><h2>Summary</h2><div className="grid"><div><b>Total Trades</b><div className="metric">{summary.total_trades ?? 0}</div></div><div><b>Win Rate</b><div className="metric">{Number((summary.win_rate ?? 0) * 100).toFixed(2)}%</div></div><div><b>Gross R</b><div className="metric">{fmt(summary.gross_R)}R</div></div><div><b>Avg R</b><div className="metric">{fmt(summary.average_R)}R</div></div><div><b>Profit Factor</b><div className="metric">{fmt(summary.profit_factor)}</div></div><div><b>Max DD</b><div className="metric">{fmt(summary.max_drawdown_in_R)}R</div></div></div></div>}

@@ -15,6 +15,8 @@ const NAV = [
   { href: '/backtests', label: 'Backtests' },
   { href: '/quant-coach', label: 'Quant Coach' },
   { href: '/paper-trading', label: 'Paper Trading' },
+  { href: '/engine-connection', label: 'Engine Connection' },
+  { href: '/charting', label: 'Charting' },
   { href: '/trade-journal', label: 'Journal' },
   { href: '/analytics', label: 'Analytics' },
 ];

@@ -111,6 +111,7 @@ class Settings:
         # Server
         self.api_host = os.getenv("API_HOST", "127.0.0.1")
         self.api_port = _as_int("API_PORT", 8000)
+        self.rate_limit_per_minute = _as_int("RATE_LIMIT_PER_MINUTE", 120)
 
         # CORS
         cors_raw = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")

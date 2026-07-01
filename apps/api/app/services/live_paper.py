@@ -688,3 +688,79 @@ class LivePaperManager:
 
 
 manager = LivePaperManager()
+
+
+def replay_csv_paper_session(csv_path: Path | str, max_rows: int = 500) -> Dict[str, Any]:
+    """Deterministic local CSV paper replay smoke used by tests and demos.
+
+    This intentionally performs no real-money execution and opens no cloud market
+    data stream. It validates local OHLCV rows, simulates a simple buy-and-hold
+    paper position over the requested sample, and returns safe summary metrics.
+    """
+    from app.services.data_manager import validate_market_csv
+    path = Path(csv_path)
+    validation = validate_market_csv(path)
+    if not validation.get("valid"):
+        return {
+            "status": "failed",
+            "mode": "paper_replay_no_real_money",
+            "rows_processed": 0,
+            "validation": validation,
+            "risk_statement": "Paper replay only. No real-money trading or broker execution.",
+        }
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            try:
+                rows.append({
+                    "timestamp": row.get("timestamp", ""),
+                    "open": _float(row.get("open")),
+                    "high": _float(row.get("high")),
+                    "low": _float(row.get("low")),
+                    "close": _float(row.get("close")),
+                    "volume": _float(row.get("volume")),
+                })
+            except Exception:
+                continue
+            if len(rows) >= max(1, min(int(max_rows), 100000)):
+                break
+    if not rows:
+        return {
+            "status": "failed",
+            "mode": "paper_replay_no_real_money",
+            "rows_processed": 0,
+            "validation": validation,
+            "risk_statement": "Paper replay only. No real-money trading or broker execution.",
+        }
+    start = rows[0]["close"] or rows[0]["open"]
+    end = rows[-1]["close"]
+    qty = 1.0 if start > 0 else 0.0
+    pnl = (end - start) * qty
+    returns = [rows[i]["close"] - rows[i - 1]["close"] for i in range(1, len(rows))]
+    wins = [r for r in returns if r > 0]
+    losses = [abs(r) for r in returns if r < 0]
+    gross_win = sum(wins)
+    gross_loss = sum(losses)
+    return {
+        "status": "completed",
+        "mode": "paper_replay_no_real_money",
+        "source": "local_csv",
+        "rows_processed": len(rows),
+        "first_timestamp": rows[0]["timestamp"],
+        "last_timestamp": rows[-1]["timestamp"],
+        "starting_cash": STARTING_BALANCE,
+        "ending_equity": round(STARTING_BALANCE + pnl, 6),
+        "position": {"symbol": DEFAULT_SYMBOL, "qty": qty, "entry_price": start, "last_price": end},
+        "pnl": round(pnl, 6),
+        "trades": [{"event_type": "PAPER_BUY_FILL", "price": start, "qty": qty, "timestamp": rows[0]["timestamp"]}] if qty else [],
+        "metrics": {
+            "win_rate": (len(wins) / len(returns)) if returns else 0.0,
+            "profit_factor": (gross_win / gross_loss) if gross_loss else 0.0,
+            "turnover": abs(qty * start),
+            "estimated_fees": 0.0,
+            "estimated_slippage": 0.0,
+        },
+        "validation": validation,
+        "risk_statement": "Paper replay only. No real-money trading or broker execution.",
+    }
