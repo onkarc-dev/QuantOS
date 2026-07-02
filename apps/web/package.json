@@ -3,7 +3,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "tsc --noEmit"
+    "test": "tsc --noEmit && node --experimental-strip-types --test tests/*.test.ts"
   },
   "dependencies": {
     "@types/node": "latest",

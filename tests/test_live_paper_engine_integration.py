@@ -13,6 +13,7 @@ from app.services import live_paper
 from app.services.live_paper import (
     LivePaperManager,
     LivePaperSession,
+    classify_exit_reason,
     classify_trade_result,
     parse_quantos_heartbeat,
     resolve_live_paper_binary,
@@ -114,11 +115,22 @@ def test_live_symbol_guard_blocks_unsafe_1s_multi_symbol(monkeypatch):
     assert accepted["ok"] is True
 
 
-def test_trade_classification_uses_small_breakeven_epsilon():
+def test_trade_classification_uses_r_thresholds():
+    assert classify_trade_result(0.193) == "WIN"
+    assert classify_trade_result(0.303) == "WIN"
     assert classify_trade_result(-1.314) == "LOSS"
-    assert classify_trade_result(-0.355) == "LOSS"
+    assert classify_trade_result(-1.015) == "LOSS"
     assert classify_trade_result(0.005) == "BREAKEVEN"
+    assert classify_trade_result(0.0) == "BREAKEVEN"
     assert classify_trade_result(0.02) == "WIN"
+
+
+def test_exit_reason_cleanup_follows_r_when_no_target_or_stop_hit():
+    assert classify_exit_reason("NEGATIVE_EXIT", 0.193) == "POSITIVE_EXIT"
+    assert classify_exit_reason("", -1.015) == "NEGATIVE_EXIT"
+    assert classify_exit_reason("TIME_EXIT", 0.0) == "BREAKEVEN_EXIT"
+    assert classify_exit_reason("TARGET_1", 0.2) == "TARGET_1"
+    assert classify_exit_reason("TARGET_1", -0.2) == "NEGATIVE_EXIT"
 
 
 class _LinesProcess:
@@ -152,7 +164,14 @@ def test_heartbeat_updates_connected_status_open_position_and_candles(monkeypatc
     assert status["markets"][0]["messages"] == 3
     assert status["open_positions_detail"][0]["entry_price"] == 100
     assert status["open_positions_detail"][0]["qty"] == 0.5
-    assert status["recent_candles"][-1]["close"] == 101.5
+    candle = status["recent_candles"][-1]
+    assert set(("time", "open", "high", "low", "close")).issubset(candle)
+    assert candle["open"] == 101.5
+    assert candle["high"] == 101.5
+    assert candle["low"] == 101.5
+    assert candle["close"] == 101.5
+    assert candle["high"] >= max(candle["open"], candle["close"])
+    assert candle["low"] <= min(candle["open"], candle["close"])
 
 
 def test_live_candle_and_trade_history_are_bounded(monkeypatch):

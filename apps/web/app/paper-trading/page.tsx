@@ -9,6 +9,7 @@ import {
   normalizeLiveCandles,
   type LiveChartCandle,
 } from "../../lib/liveChartCandles";
+import { classifyTradeResultFromR } from "../../lib/tradeClassification";
 import TradingChart from "../../components/TradingChart";
 
 type StrategyRow = {
@@ -145,13 +146,13 @@ function prettyReason(reason: any) {
   return r.replaceAll("_", " ");
 }
 function inferResult(entry: any, exit: any, rValue: any, side = "BUY") {
+  const rResult = classifyTradeResultFromR(rValue);
+  if (rResult !== "-") return rResult;
+
   const en = Number(entry),
     ex = Number(exit);
   const normalizedSide = String(side || "BUY").toUpperCase();
 
-  // Trade journal display must trust actual entry/exit price direction first.
-  // This prevents impossible rows like BUY exit below entry but Result = WIN
-  // because an old/misaligned R_multiple was parsed from raw text.
   if (Number.isFinite(en) && Number.isFinite(ex)) {
     const pnl = normalizedSide === "SELL" ? en - ex : ex - en;
     if (pnl > 0.0000001) return "WIN";
@@ -159,12 +160,6 @@ function inferResult(entry: any, exit: any, rValue: any, side = "BUY") {
     return "BREAKEVEN";
   }
 
-  const r = Number(rValue);
-  if (Number.isFinite(r)) {
-    if (r > 0.01) return "WIN";
-    if (r < -0.01) return "LOSS";
-    return "BREAKEVEN";
-  }
   return "-";
 }
 function inferExitReason(t: any) {
@@ -190,9 +185,7 @@ function inferExitReason(t: any) {
       if (Number.isFinite(target2) && exit >= target2) return "TARGET 2 HIT";
       if (Number.isFinite(target1) && exit >= target1) return "TARGET 1 HIT";
       if (rawReason === "TARGET 2 HIT" || rawReason === "TARGET 1 HIT") return rawReason;
-      if (rawReason === "TIME EXIT") return "TIME EXIT PROFIT";
-      if (rawReason === "FORCED EXIT") return "FORCED EXIT PROFIT";
-      return "PROFIT EXIT";
+      return "POSITIVE EXIT";
     }
     return "BREAKEVEN EXIT";
   }
@@ -206,17 +199,15 @@ function inferExitReason(t: any) {
       if (Number.isFinite(target2) && exit <= target2) return "TARGET 2 HIT";
       if (Number.isFinite(target1) && exit <= target1) return "TARGET 1 HIT";
       if (rawReason === "TARGET 2 HIT" || rawReason === "TARGET 1 HIT") return rawReason;
-      if (rawReason === "TIME EXIT") return "TIME EXIT PROFIT";
-      if (rawReason === "FORCED EXIT") return "FORCED EXIT PROFIT";
-      return "PROFIT EXIT";
+      return "POSITIVE EXIT";
     }
     return "BREAKEVEN EXIT";
   }
 
-  if (rawReason) return rawReason;
-  if (result === "WIN") return "PROFIT EXIT";
+  if (result === "WIN") return "POSITIVE EXIT";
   if (result === "LOSS") return "NEGATIVE EXIT";
   if (result === "BREAKEVEN") return "BREAKEVEN EXIT";
+  if (rawReason) return rawReason;
   return "-";
 }
 function buildTradeRows(events: any[]) {
@@ -658,6 +649,7 @@ export default function PaperTradingPage() {
     selectedChartState.last_update ||
     selectedChartState.updated_at ||
     (chartCandles.length ? chartCandles[chartCandles.length - 1]?.time : "");
+  const chartLastCandle = chartCandles[chartCandles.length - 1];
   const openTrade = Number(metrics.open_trade || metrics.open_positions || 0);
   const totalTrades = Number(metrics.total_trades || 0);
   const wins = Number(metrics.wins || 0);
@@ -757,6 +749,11 @@ export default function PaperTradingPage() {
         )}
         <div style={{ display: "flex", gap: 14, flexWrap: "wrap", color: "#94a3b8", fontSize: 12, marginTop: 10 }}>
           <span>Chart candles: {chartCandles.length}</span>
+          <span>
+            Last OHLC: {chartLastCandle
+              ? `${Number(chartLastCandle.open).toFixed(2)} / ${Number(chartLastCandle.high).toFixed(2)} / ${Number(chartLastCandle.low).toFixed(2)} / ${Number(chartLastCandle.close).toFixed(2)}`
+              : "not available"}
+          </span>
           <span>Last price: {Number(selectedChartPrice) > 0 ? `$${money(selectedChartPrice)}` : "not available"}</span>
           <span>Last update: {chartUpdateTime(chartLastUpdate)}</span>
         </div>

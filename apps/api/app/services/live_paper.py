@@ -118,6 +118,22 @@ def classify_trade_result(r_value: Any, epsilon: float = LIVE_PAPER_R_EPSILON) -
     return "BREAKEVEN"
 
 
+def classify_exit_reason(reason: Any, r_value: Any) -> str:
+    normalized = str(reason or "").strip().upper().replace(" ", "_")
+    result = classify_trade_result(r_value)
+    if result == "WIN" and normalized in {"TARGET1", "TARGET_1", "TARGET1_HIT"}:
+        return "TARGET_1"
+    if result == "WIN" and normalized in {"TARGET2", "TARGET_2", "TARGET2_HIT"}:
+        return "TARGET_2"
+    if result == "LOSS" and normalized in {"STOP", "STOP_LOSS", "STOP_HIT"}:
+        return "STOP_LOSS"
+    if result == "WIN":
+        return "POSITIVE_EXIT"
+    if result == "LOSS":
+        return "NEGATIVE_EXIT"
+    return "BREAKEVEN_EXIT"
+
+
 def _path_for_display(path: Path) -> str:
     try:
         return str(path)
@@ -811,7 +827,9 @@ class LivePaperManager:
                                 ev = dict(trade)
                                 ev.setdefault("event_type", "PAPER_SELL_FILL")
                                 ev["symbol"] = str(ev.get("symbol") or hb_symbol).upper()
-                                ev["result"] = classify_trade_result(ev.get("R_multiple") or ev.get("r"))
+                                r_value = ev.get("R_multiple") or ev.get("r")
+                                ev["result"] = classify_trade_result(r_value)
+                                ev["exit_reason"] = classify_exit_reason(ev.get("exit_reason") or ev.get("reason"), r_value)
                                 ev.setdefault("ts", now())
                                 session.events.append(ev)
                         session.events = session.events[-MAX_LIVE_EVENTS:]
@@ -885,6 +903,7 @@ class LivePaperManager:
         ev_type = "PRISM_SIGNAL" if line.startswith("PRISM_OUTPUT") else line.split()[0]
         r_value = _float(metrics.get("R_multiple") or metrics.get("last_R"))
         result = classify_trade_result(r_value) if ev_type == "PAPER_SELL_FILL" else metrics.get("result", "")
+        exit_reason = classify_exit_reason(metrics.get("exit_reason", ""), r_value) if ev_type == "PAPER_SELL_FILL" else metrics.get("exit_reason", "")
         event = {
             "event_type": ev_type,
             "symbol": metrics.get("symbol", DEFAULT_SYMBOL).upper(),
@@ -897,7 +916,7 @@ class LivePaperManager:
             "r": r_value,
             "R_multiple": r_value,
             "result": result,
-            "exit_reason": metrics.get("exit_reason", ""),
+            "exit_reason": exit_reason,
             "stop": _float(metrics.get("stop")),
             "target1": _float(metrics.get("target1")),
             "target2": _float(metrics.get("target2")),

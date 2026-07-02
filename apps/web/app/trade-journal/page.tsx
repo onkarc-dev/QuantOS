@@ -4,6 +4,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { api, formatApiError } from '../../lib/api';
+import { classifyTradeRow, cleanupExitReason } from '../../lib/tradeClassification';
 
 type Job = { id: string; status: string; mode?: string; created_at?: string; symbol?: string; symbols?: string[]; symbols_json?: string; display_strategy_id?: string; user_strategy_id?: string; strategy_code?: string; strategy_id?: string };
 type TradeRow = Record<string, any>;
@@ -31,26 +32,13 @@ function cleanReason(v: any) {
     .replace(/\b\w/g, c => c.toUpperCase());
 }
 function resultFromRow(r: TradeRow) {
-  const explicit = String(r.result || '').toUpperCase();
-  if (['WIN', 'LOSS', 'BREAKEVEN'].includes(explicit)) return explicit;
-  const rr = Number(r.r_multiple ?? r.R_multiple ?? r.r);
-  if (Number.isFinite(rr)) {
-    if (rr > 0.000001) return 'WIN';
-    if (rr < -0.000001) return 'LOSS';
-    return 'BREAKEVEN';
-  }
-  const entry = Number(r.entry_price), exit = Number(r.exit_price);
-  if (Number.isFinite(entry) && Number.isFinite(exit)) {
-    if (exit > entry) return 'WIN';
-    if (exit < entry) return 'LOSS';
-    return 'BREAKEVEN';
-  }
-  return '-';
+  return classifyTradeRow(r);
 }
 function resultStyle(result: any) {
   const r = String(result).toUpperCase();
   if (r === 'WIN') return { color: '#86efac', fontWeight: 800 };
   if (r === 'LOSS') return { color: '#fca5a5', fontWeight: 800 };
+  if (r === 'OPEN') return { color: '#93c5fd', fontWeight: 800 };
   return { color: '#e5e7eb', fontWeight: 800 };
 }
 function signedStyle(v: any) {
@@ -147,6 +135,7 @@ export default function Journal() {
             {rows.length ? rows.map((r, i) => {
               const result = resultFromRow(r);
               const rv = r.r_multiple ?? r.R_multiple ?? r.r;
+              const reason = cleanupExitReason(r.exit_reason, rv);
               return <tr key={i}>
                 <td>{r.trade_id ?? i + 1}</td>
                 <td style={{ color:'#93c5fd', fontWeight:800 }}>{r.symbol || r.market || '-'}</td>
@@ -157,7 +146,7 @@ export default function Journal() {
                 <td>{money(r.target2)}</td>
                 <td>{cleanTime(r.exit_time)}</td>
                 <td>{money(r.exit_price)}</td>
-                <td>{cleanReason(r.exit_reason)}</td>
+                <td>{cleanReason(reason || r.exit_reason)}</td>
                 <td style={resultStyle(result)}>{result}</td>
                 <td style={signedStyle(rv)}>{rFmt(rv)}</td>
                 <td>{r.setup_score_at_entry ?? r.setup_score ?? '-'}</td>

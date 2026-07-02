@@ -16,6 +16,7 @@ import {
   type Time,
   type UTCTimestamp,
 } from 'lightweight-charts';
+import { visibleChartCandle } from '../lib/liveChartCandles';
 
 export type TradingCandle = { time: string | number; open: number; high: number; low: number; close: number; volume?: number };
 export type TradingMarker = { time: string | number; position?: 'aboveBar' | 'belowBar'; color?: string; shape?: 'arrowUp' | 'arrowDown' | 'circle'; text?: string; price?: number };
@@ -50,12 +51,13 @@ function buildChartData(candles: TradingCandle[]): {
   const data = candles.map((candle, index) => {
     const time = toChartTime(candle.time, index);
     timeByInput.set(String(candle.time), time);
+    const visual = visibleChartCandle(candle);
     return {
       time,
-      open: candle.open,
-      high: candle.high,
-      low: candle.low,
-      close: candle.close,
+      open: visual.open,
+      high: visual.high,
+      low: visual.low,
+      close: visual.close,
     };
   });
   return {data, timeByInput};
@@ -94,7 +96,7 @@ export default function TradingChart({
         horzLines: {color: '#1e293b'},
       },
       rightPriceScale: {borderColor: '#334155'},
-      timeScale: {borderColor: '#334155', timeVisible: true, secondsVisible: false},
+      timeScale: {borderColor: '#334155', timeVisible: true, secondsVisible: true},
       crosshair: {
         vertLine: {color: '#64748b'},
         horzLine: {color: '#64748b'},
